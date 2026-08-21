@@ -234,6 +234,29 @@ test("maps frequently unqualified regional capitals to their regions", () => {
   );
 });
 
+test("normalizes inflected locality names found in live chronicles", () => {
+  const chronology = parseGeranChronology(`
+20 августа 2026 года.
+• 13:55 Окрестности Жмеринки Винницкой области – взрыв. Герань-4.
+• 15:00 Окрестности Ильичевска Одесской области – взрыв. Герань-4.
+`, {
+    startDate: "2026-08-20",
+    endDate: "2026-08-21",
+    startTime: "12:20",
+  });
+
+  assert.deepEqual(chronology.regions, [
+    {
+      name: "Винницкая область",
+      locations: [{ name: "Жмеринка", times: ["13:55"] }],
+    },
+    {
+      name: "Одесская область",
+      locations: [{ name: "Ильичевск", times: ["15:00"] }],
+    },
+  ]);
+});
+
 test("treats a region-only Donbass subject as Donetsk region", () => {
   const chronology = parseGeranChronology(`
 17 августа 2026 года.
