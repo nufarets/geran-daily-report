@@ -33,9 +33,6 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      REPORT_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.report_date || '' }}
-      FORCE_UPDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_update && '1' || '0' }}
 
     steps:
       - name: Checkout repository
@@ -51,6 +48,9 @@ jobs:
 
       - name: Generate report
         run: npm run generate
+        env:
+          REPORT_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.report_date || '' }}
+          FORCE_UPDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_update && '1' || '0' }}
 
       - name: Commit report when it changed
         shell: bash
