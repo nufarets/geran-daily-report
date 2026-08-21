@@ -1,0 +1,70 @@
+name: Publish daily report
+
+on:
+  workflow_dispatch:
+    inputs:
+      report_date:
+        description: "Дата окончания периода (YYYY-MM-DD); пусто = сегодня по Москве"
+        required: false
+        type: string
+      force_update:
+        description: "Пересобрать уже существующий датированный отчёт"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "10,20,30,40,50 8 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "0,10,20,30,40,50 9 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "10,40 10,11 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "10 12 * * *"
+      timezone: "Europe/Moscow"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-report-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      REPORT_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.report_date || '' }}
+      FORCE_UPDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_update && '1' || '0' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Run tests
+        run: npm test
+
+      - name: Generate report
+        run: npm run generate
+
+      - name: Commit report when it changed
+        shell: bash
+        run: |
+          if [[ -n "$(git status --porcelain -- reports)" ]]; then
+            git add -A -- reports
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No report changes to publish."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "report: publish daily update"
+          git push

@@ -1,0 +1,14 @@
+{
+  "name": "geran-daily-report",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ежедневная генерация архивной сводки по открытым публикациям Telegram-каналов.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test --test-isolation=none",
+    "generate": "node src/generate-report.mjs"
+  }
+}
