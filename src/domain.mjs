@@ -865,10 +865,10 @@ export function renderMarkdownReport(model = {}) {
   }
 
   for (const region of regions) {
-    lines.push("", `${region.name}:`);
+    lines.push("", region.name, "");
     for (const location of region.locations ?? []) {
       const times = Array.isArray(location.times) ? location.times.join(", ") : location.timeLabel;
-      if (times && location.name) lines.push(`${times} – ${location.name}`);
+      if (times && location.name) lines.push(`*${times}* - ${location.name}  `);
     }
   }
 

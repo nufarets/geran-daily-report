@@ -109,8 +109,8 @@ test("publishes the 17–18 report to dated/latest files and makes a repeated ru
 
   assert.match(result.markdown, /^17\.08\.2026-18\.08\.2026\n/u);
   assert.match(result.markdown, /Первые группы БПЛА обнаружены в Запорожской области в 12:46/u);
-  assert.match(result.markdown, /Николаевская область:\n14:30 – Николаев/u);
-  assert.match(result.markdown, /Запорожская область:\n20:15 – взрыв в области/u);
+  assert.match(result.markdown, /Николаевская область\n\n\*14:30\* - Николаев {2}\n/u);
+  assert.match(result.markdown, /Запорожская область\n\n\*20:15\* - взрыв в области {2}\n/u);
   assert.match(result.markdown, /Запущено 147 БПЛА/u);
   assert.match(result.markdown, /Сбито\/локационно потеряно 111/u);
   assert.match(
