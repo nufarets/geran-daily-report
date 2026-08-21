@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,6 +36,13 @@ function shiftIsoDate(isoDate, days) {
   const [year, month, day] = isoDate.split("-").map(Number);
   const value = new Date(Date.UTC(year, month - 1, day + days));
   return value.toISOString().slice(0, 10);
+}
+
+function isValidIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(value ?? ""))) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.toISOString().slice(0, 10) === value;
 }
 
 function moscowInstant(isoDate, hour, minute) {
@@ -95,6 +102,8 @@ async function fetchSource(fetchHistory, handle, from, to) {
     from,
     to,
     maxPages: 48,
+    retries: 0,
+    timeoutMs: 8_000,
   });
 }
 
@@ -112,7 +121,7 @@ async function fetchFallbackLaunchMessages(fetchHistory, from, to) {
   if (unavailable.length) {
     console.warn(`Недоступны резервные источники: ${unavailable.join(", ")}`);
   }
-  return messages;
+  return { messages, unavailable };
 }
 
 async function writeReport(reportsDirectory, reportDate, markdown) {
@@ -120,8 +129,17 @@ async function writeReport(reportsDirectory, reportDate, markdown) {
   const datedPath = path.join(reportsDirectory, `${reportDate}.md`);
   const latestPath = path.join(reportsDirectory, "latest.md");
   await writeFile(datedPath, markdown, "utf8");
-  await writeFile(latestPath, markdown, "utf8");
-  return { datedPath, latestPath };
+
+  const reportDates = (await readdir(reportsDirectory))
+    .map((name) => /^(\d{4}-\d{2}-\d{2})\.md$/u.exec(name)?.[1])
+    .filter(Boolean)
+    .sort();
+  const latestReportDate = reportDates.at(-1) ?? reportDate;
+  const latestMarkdown = latestReportDate === reportDate
+    ? markdown
+    : await readFile(path.join(reportsDirectory, `${latestReportDate}.md`), "utf8");
+  await writeFile(latestPath, latestMarkdown, "utf8");
+  return { datedPath, latestPath, latestUpdated: latestReportDate === reportDate };
 }
 
 export async function generateDailyReport({
@@ -131,6 +149,16 @@ export async function generateDailyReport({
   fetchHistory = fetchTelegramHistory,
   reportsDirectory = REPORTS_DIRECTORY,
 } = {}) {
+  if (!isValidIsoDate(reportDate)) {
+    throw new TypeError("reportDate must be a real date in YYYY-MM-DD format");
+  }
+  const runtimeNow = now instanceof Date ? now : new Date();
+  if (!Number.isFinite(runtimeNow.getTime())) throw new TypeError("now must be a valid Date");
+  const runtimeReportDate = zonedDateParts(runtimeNow);
+  if (reportDate > runtimeReportDate) {
+    throw new RangeError("reportDate must not be in the future in Europe/Moscow");
+  }
+
   const previousDate = shiftIsoDate(reportDate, -1);
   const datedPath = path.join(reportsDirectory, `${reportDate}.md`);
   if (!force && await exists(datedPath)) {
@@ -138,24 +166,26 @@ export async function generateDailyReport({
   }
 
   const searchFrom = moscowInstant(previousDate, 12, 20);
-  const searchTo = now instanceof Date
-    ? now
-    : process.env.REPORT_DATE
-      ? moscowInstant(reportDate, 12, 30)
-      : new Date();
+  const cycleEnd = moscowInstant(reportDate, 12, 20);
+  const sourceSearchTo = reportDate < runtimeReportDate
+    ? moscowInstant(shiftIsoDate(reportDate, 1), 12, 20)
+    : runtimeNow;
+  const cycleSearchTo = new Date(Math.min(sourceSearchTo.getTime(), cycleEnd.getTime()));
 
   const [chronicleMessages, officialMessages] = await Promise.all([
-    fetchSource(fetchHistory, CHANNELS.chronology, searchFrom, searchTo),
-    fetchSource(fetchHistory, CHANNELS.official, searchFrom, searchTo),
+    fetchSource(fetchHistory, CHANNELS.chronology, searchFrom, sourceSearchTo),
+    fetchSource(fetchHistory, CHANNELS.official, searchFrom, sourceSearchTo),
   ]);
 
   const firstDetection = findFirstStrikeUavMessage(officialMessages, {
     windowStart: searchFrom,
-    windowEnd: searchTo,
+    windowEnd: cycleSearchTo,
   });
   const chronicle = findAndMergeChronicle(chronicleMessages, {
     startDate: previousDate,
     endDate: reportDate,
+    now: runtimeNow,
+    continuationGraceMs: 5 * 60 * 1000,
   });
 
   if (!chronicle) {
@@ -174,9 +204,12 @@ export async function generateDailyReport({
   let launchSource = "official";
   let launchSourceUrls = [];
   if (!launchPlaces.length) {
-    const launchCutoff = moscowInstant(reportDate, 7, 30);
-    const fallbackMessages = await fetchFallbackLaunchMessages(fetchHistory, searchFrom, searchTo);
-    const evidence = parseLaunchEvidence(messagesWithin(fallbackMessages, searchFrom, launchCutoff));
+    const fallback = await fetchFallbackLaunchMessages(fetchHistory, searchFrom, cycleSearchTo);
+    const evidence = parseLaunchEvidence(messagesWithin(fallback.messages, searchFrom, cycleSearchTo));
+    if (fallback.unavailable.length > 0) {
+      console.log("Резервные источники пусков доступны не полностью; публикация отложена.");
+      return { status: "waiting-for-launch-sources", reportDate };
+    }
     launchPlaces = evidence.places;
     launchSourceUrls = evidence.sourceUrls;
     launchSource = "monitoring";
@@ -204,7 +237,12 @@ export async function generateDailyReport({
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   generateDailyReport()
-    .then((result) => console.log(`Статус: ${result.status}`))
+    .then((result) => {
+      console.log(`Статус: ${result.status}`);
+      if (process.env.REQUIRE_PUBLICATION === "1" && result.status.startsWith("waiting-")) {
+        throw new Error(`Отчёт не опубликован: ${result.status}`);
+      }
+    })
     .catch((error) => {
       console.error(error?.stack || error);
       process.exitCode = 1;

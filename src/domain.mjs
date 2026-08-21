@@ -289,20 +289,41 @@ function firstRegionMention(text) {
   return best?.region ?? null;
 }
 
+const EXPLICIT_STRIKE_UAV_PATTERN =
+  /(?:ударн\p{L}*\s+(?:бпла|бпл[аa]|безп[іи]лотн\p{L}*)|shahed|шахед|геран\p{L}*)/iu;
+const RECONNAISSANCE_UAV_PATTERN =
+  /(?:разведыватель|разв[еі]д(?:ывательн|очн|ка)|розв[іи]дувальн|орлан|supercam|zala)/iu;
+
+function textClauses(text) {
+  return String(text ?? "")
+    .split(/(?:[.!?;]+|\r?\n+)/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
+function strikeUavClauses(text) {
+  return textClauses(text).filter((clause) => (
+    EXPLICIT_STRIKE_UAV_PATTERN.test(clause)
+    || (/🛵/u.test(clause) && !RECONNAISSANCE_UAV_PATTERN.test(clause))
+  ));
+}
+
 function isStrikeUavText(text) {
-  if (!text) return false;
-  if (/(?:разведыватель|разв[еі]д(?:ывательн|очн|ка)|розв[іи]дувальн|орлан|supercam|zala)/iu.test(text)) {
-    return false;
+  return strikeUavClauses(text).length > 0;
+}
+
+function firstStrikeRegionMention(text) {
+  for (const clause of strikeUavClauses(text)) {
+    const region = firstRegionMention(clause);
+    if (region) return region;
   }
-  return (
-    /🛵/u.test(text) ||
-    /ударн\p{L}*\s+(?:бпла|бпл[аa]|безп[іи]лотн\p{L}*)/iu.test(text) ||
-    /(?:shahed|шахед|геран\p{L}*)/iu.test(text)
-  );
+  return null;
 }
 
 function isIsolatedReactiveUavText(text) {
-  return /^\s*(?:⚠️?\s*)?🛵\s*(?:1\s+)?реактивн(?:ий|ый)\s+бпла(?!\p{L})/iu.test(text);
+  const strikeClauses = strikeUavClauses(text);
+  return strikeClauses.length === 1
+    && /^(?:⚠️?\s*)?🛵\s*(?:1\s+)?реактивн(?:ий|ый)\s+бпла(?!\p{L})/iu.test(strikeClauses[0]);
 }
 
 /**
@@ -332,7 +353,7 @@ export function findFirstStrikeUavMessage(
     ...message,
     datetime: messageDateValue(message) ?? datetime.toISOString(),
     timeLabel: timeLabelFor(datetime, timeZone),
-    regionLabel: firstRegionMention(messageText(message)),
+    regionLabel: firstStrikeRegionMention(messageText(message)),
     sourceUrl: sourceUrlFor(message),
   };
 }
@@ -362,6 +383,25 @@ function looksLikeTimedChronicle(text) {
   return timedLines.length > 0;
 }
 
+function chroniclePartLooksIncomplete(text) {
+  if (
+    /(?:продолжение|продовження)\s+(?:следует|будет|в\s+следующем|у\s+наступному)|(?:часть|частина)\s*1\s*(?:\/|из|з)\s*2/iu.test(text)
+  ) {
+    return true;
+  }
+
+  // Telegram text messages are limited to roughly 4096 code points. A part
+  // close to that boundary which ends inside a chronology record is a strong
+  // structural signal that the client split the report into another message.
+  if ([...text].length < 4000 || !looksLikeTimedChronicle(text)) return false;
+  const lastLine = text.trim().split(/\r?\n/u).at(-1)?.trim() ?? "";
+  if (/[-–—,:;]$/u.test(lastLine)) return true;
+  const timedTail = /^\s*[•·▪]?\s*\d{1,2}\s*[:.]\s*\d{2}/u.test(lastLine);
+  const hasFinishedPayload =
+    /(?:геран|гербер|умпк|искандер|бандерол|ракет|отрк|рсзо|циркон|кинжал|молни|ланцет|торнадо)/iu.test(lastLine);
+  return timedTail && !hasFinishedPayload;
+}
+
 function messagesAreAdjacent(previous, current) {
   const previousId = Number(previous?.messageId ?? previous?.id);
   const currentId = Number(current?.messageId ?? current?.id);
@@ -379,7 +419,10 @@ function messagesAreAdjacent(previous, current) {
 }
 
 /** Find the requested daily chronicle and glue its adjacent Telegram parts. */
-export function findAndMergeChronicle(messages, { startDate, endDate } = {}) {
+export function findAndMergeChronicle(
+  messages,
+  { startDate, endDate, now, continuationGraceMs = 0 } = {},
+) {
   const sorted = (Array.isArray(messages) ? messages : [])
     .filter((message) => {
       const channel = normalizeChannel(message?.channel);
@@ -408,6 +451,20 @@ export function findAndMergeChronicle(messages, { startDate, endDate } = {}) {
       (endDate && textMentionsDate(text, endDate) && /хронолог|\d{1,2}\s*[:.]\s*\d{2}/iu.test(text));
     if (!continuation) break;
     selected.push(candidate);
+  }
+
+  if (chroniclePartLooksIncomplete(messageText(selected.at(-1)))) return null;
+  if (selected.length === 1 && continuationGraceMs > 0) {
+    const publishedAt = messageDate(selected[0])?.getTime();
+    const checkedAt = now instanceof Date ? now.getTime() : Date.parse(now ?? "");
+    if (
+      Number.isFinite(publishedAt)
+      && Number.isFinite(checkedAt)
+      && checkedAt >= publishedAt
+      && checkedAt - publishedAt < continuationGraceMs
+    ) {
+      return null;
+    }
   }
 
   return {
@@ -620,6 +677,27 @@ function isRecordInsideWindow(record, { startDate, endDate, startTime }) {
   return true;
 }
 
+function splitChronicleEventBody(body) {
+  const conventional = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(body);
+  if (conventional) return [conventional[1], conventional[2]];
+
+  // In live chronicles the separator is sometimes written without a space on
+  // either side. Locate the closest dash before the event word so dashes in a
+  // time range, a city (Ивано-Франковск), or «Герань-4» are not separators.
+  const eventWord = /(?<!\p{L})(?:взрыв|удар|прил[её]т|пожар)\p{L}*/iu.exec(body);
+  if (!eventWord) return null;
+  let separatorIndex = -1;
+  for (let index = 0; index < eventWord.index; index += 1) {
+    if (body[index] === "-" || body[index] === "–" || body[index] === "—") {
+      separatorIndex = index;
+    }
+  }
+  if (separatorIndex <= 0) return null;
+  const subject = body.slice(0, separatorIndex).trim();
+  const details = body.slice(separatorIndex + 1).trim();
+  return subject && details ? [subject, details] : null;
+}
+
 /**
  * Parse Geran-only chronology lines and group them as region -> location -> times.
  */
@@ -631,9 +709,9 @@ export function parseGeranChronology(
   const events = [];
 
   for (const record of records) {
-    const separator = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(record.body);
+    const separator = splitChronicleEventBody(record.body);
     if (!separator) continue;
-    const [, subject, details] = separator;
+    const [subject, details] = separator;
     if (!geranMentioned(details) || !isRecordInsideWindow(record, { startDate, endDate, startTime })) {
       continue;
     }
@@ -760,13 +838,35 @@ export function parseOfficialPpo(
 
 function isActualLaunchText(text) {
   const negative =
-    /(?:угроз\p{L}*|загроз\p{L}*|возможн\p{L}*|можлив\p{L}*|вероятн\p{L}*|ймовірн\p{L}*|подготовк\p{L}*|підготовк\p{L}*|ожида\p{L}*|очіку\p{L}*|не\s+(?:было|було|зафиксирован\p{L}*|підтверджен\p{L}*)|не\s+подтвержден\p{L}*)\s+(?:\S+\s+){0,3}(?:пуск|запуск)/iu;
+    /(?:угроз\p{L}*|загроз\p{L}*|возможн\p{L}*|можлив\p{L}*|вероятн\p{L}*|ймовірн\p{L}*|подготовк\p{L}*|підготовк\p{L}*|ожида\p{L}*|очіку\p{L}*|не|ні)\s+(?:\S+\s+){0,5}(?:пуск|запуск)|(?:пуск|запуск)\p{L}*(?:\s+\S+){0,5}\s+(?:не|ні)\s+(?:было|було|підтверджен\p{L}*|подтвержден\p{L}*|зафиксирован\p{L}*|зафіксован\p{L}*)/iu;
   if (negative.test(text)) return false;
   return /(?:^|[^\p{L}])(?:пуск(?:и|ов|ів|у|а)?|запущен\p{L}*|запущено|стартува\p{L}*)(?!\p{L})/iu.test(text);
 }
 
 function hasStrikeUavMarker(text) {
   return /(?:геран\p{L}*|гербер\p{L}*|shahed|шах(?:ед)?\p{L}*|ударн\p{L}*\s+(?:бпла|безп[іи]лотн\p{L}*))/iu.test(text);
+}
+
+function confirmedStrikeLaunchClauses(text) {
+  const clauses = textClauses(text);
+  const confirmed = [];
+  for (let index = 0; index < clauses.length; index += 1) {
+    const clause = clauses[index];
+    if (!isActualLaunchText(clause) || !hasStrikeUavMarker(clause)) continue;
+    confirmed.push(clause);
+
+    // Some monitors put the confirmed locations on separate following lines.
+    // Carry over only location-only clauses; a new launch/UAV statement starts
+    // a separate semantic clause and must be evaluated on its own.
+    for (let nextIndex = index + 1; nextIndex < clauses.length; nextIndex += 1) {
+      const next = clauses[nextIndex];
+      if (isActualLaunchText(next) || hasStrikeUavMarker(next)) break;
+      if (launchMatches(next).length === 0) break;
+      confirmed.push(next);
+      index = nextIndex;
+    }
+  }
+  return confirmed;
 }
 
 function isLaunchReplySupplement(message, previousLaunch) {
@@ -813,10 +913,12 @@ export function parseLaunchPlaces(messages, { windowStart, windowEnd } = {}) {
     if (end && date && date > end) continue;
     const text = messageText(message);
     const previousLaunch = previousLaunchByChannel.get(channel || "_");
-    const confirmedLaunch = isActualLaunchText(text) && hasStrikeUavMarker(text);
+    const confirmedClauses = confirmedStrikeLaunchClauses(text);
+    const confirmedLaunch = confirmedClauses.length > 0;
     const replySupplement = isLaunchReplySupplement(message, previousLaunch);
     if (!confirmedLaunch && !replySupplement) continue;
-    for (const canonical of launchMatches(text)) matches.push(canonical);
+    const placeText = confirmedLaunch ? confirmedClauses.join("\n") : text;
+    for (const canonical of launchMatches(placeText)) matches.push(canonical);
     if (confirmedLaunch) previousLaunchByChannel.set(channel || "_", message);
   }
   return unique(matches);
@@ -879,8 +981,12 @@ export function renderMarkdownReport(model = {}) {
   const neutralized = ppo?.neutralized ?? ppo?.shotDownOrLost ?? ppo?.shotDown;
   if (launched != null || neutralized != null || launchPlaces.length > 0) {
     lines.push("", "Сводки ППО", "");
-    if (launched != null) lines.push(`Запущено ${launched} БПЛА`);
-    if (neutralized != null) lines.push(`Сбито/локационно потеряно ${neutralized}`);
+    const countRows = [];
+    if (launched != null) countRows.push(`Запущено ${launched} БПЛА`);
+    if (neutralized != null) countRows.push(`Сбито/локационно потеряно ${neutralized}`);
+    countRows.forEach((row, index) => {
+      lines.push(index < countRows.length - 1 ? `${row}  ` : row);
+    });
     if (launchPlaces.length > 0) {
       if (launched != null || neutralized != null) lines.push("");
       const official = model.launchSource === "official" || (!model.launchSource && Boolean(ppo));

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -79,6 +79,79 @@ async function temporaryReportsDirectory(testContext) {
   return directory;
 }
 
+test("rejects invalid or future report dates before touching sources or paths", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  let fetchCalls = 0;
+  const fetchHistory = async () => {
+    fetchCalls += 1;
+    return [];
+  };
+
+  await assert.rejects(generateDailyReport({
+    reportDate: "../outside",
+    now: RUN_AT,
+    fetchHistory,
+    reportsDirectory,
+  }), /YYYY-MM-DD/u);
+  await assert.rejects(generateDailyReport({
+    reportDate: "2026-08-19",
+    now: RUN_AT,
+    fetchHistory,
+    reportsDirectory,
+  }), /future/u);
+  assert.equal(fetchCalls, 0);
+});
+
+test("historical backfill finds a late chronicle but caps launch evidence at the next 12:20 boundary", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const lateChronicle = [message(
+    "geranium_chronicles",
+    80122,
+    "2026-08-19T09:18:00.000Z",
+    chroniclePartOne + "\n" + chroniclePartTwo,
+  )];
+  const fixtures = {
+    geranium_chronicles: lateChronicle,
+    kpszsu: [firstDetectionMessage()],
+    ua_ppo_monitor: [
+      message(
+        "ua_ppo_monitor",
+        901,
+        "2026-08-18T09:15:00.000Z",
+        "Подтверждены пуски Гераней из Халино.",
+      ),
+      message(
+        "ua_ppo_monitor",
+        902,
+        "2026-08-18T09:25:00.000Z",
+        "Подтверждены пуски Гераней из Миллерово.",
+      ),
+    ],
+    Ukrainian_Intelligence: [],
+    StrategicaviationT: [],
+  };
+  const { fetchHistory, calls } = injectedFetch(fixtures);
+
+  const result = await generateDailyReport({
+    reportDate: REPORT_DATE,
+    now: new Date("2026-08-21T08:00:00.000Z"),
+    fetchHistory,
+    reportsDirectory,
+  });
+
+  assert.equal(result.status, "published");
+  assert.deepEqual(result.model.launchPlaces, ["Курск"]);
+  const callsByHandle = Object.fromEntries(calls.map((call) => [call.handle, call]));
+  assert.equal(
+    callsByHandle.geranium_chronicles.options.to.toISOString(),
+    "2026-08-19T09:20:00.000Z",
+  );
+  assert.equal(callsByHandle.kpszsu.options.to.toISOString(), "2026-08-19T09:20:00.000Z");
+  for (const handle of ["ua_ppo_monitor", "Ukrainian_Intelligence", "StrategicaviationT"]) {
+    assert.equal(callsByHandle[handle].options.to.toISOString(), "2026-08-18T09:20:00.000Z");
+  }
+});
+
 test("publishes the 17–18 report to dated/latest files and makes a repeated run idempotent", async (t) => {
   const reportsDirectory = await temporaryReportsDirectory(t);
   const fixtures = {
@@ -105,6 +178,8 @@ test("publishes the 17–18 report to dated/latest files and makes a repeated ru
     assert.equal(options.from.toISOString(), "2026-08-17T09:20:00.000Z");
     assert.equal(options.to.toISOString(), RUN_AT.toISOString());
     assert.equal(options.maxPages, 48);
+    assert.equal(options.retries, 0);
+    assert.equal(options.timeoutMs, 8_000);
   }
 
   assert.match(result.markdown, /^17\.08\.2026-18\.08\.2026\n/u);
@@ -153,6 +228,12 @@ test("uses confirmed monitoring launch places when the official PVO summary is a
         "2026-08-17T21:00:00.000Z",
         "Возможны пуски ракет и БПЛА из Цимбулово.",
       ),
+      message(
+        "Ukrainian_Intelligence",
+        602,
+        "2026-08-18T05:05:00.000Z",
+        "Подтверждены пуски ударных БПЛА из Миллерово.",
+      ),
     ],
     StrategicaviationT: [
       message(
@@ -182,6 +263,7 @@ test("uses confirmed monitoring launch places when the official PVO summary is a
     "Смоленск",
     "Крым",
     "Чауда",
+    "Ростов",
   ]);
   assert.deepEqual(new Set(calls.map((call) => call.handle)), new Set([
     "geranium_chronicles",
@@ -199,9 +281,61 @@ test("uses confirmed monitoring launch places when the official PVO summary is a
   assert.doesNotMatch(result.markdown, /Орел/u, "a possible launch must not be included");
   assert.match(result.markdown, /https:\/\/t\.me\/ua_ppo_monitor\/501/u);
   assert.match(result.markdown, /https:\/\/t\.me\/StrategicaviationT\/701/u);
+  assert.match(result.markdown, /https:\/\/t\.me\/Ukrainian_Intelligence\/602/u);
   assert.doesNotMatch(result.markdown, /https:\/\/t\.me\/Ukrainian_Intelligence\/601/u);
   assert.equal(await readFile(path.join(reportsDirectory, "2026-08-18.md"), "utf8"), result.markdown);
   assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
+});
+
+test("a historical backfill never replaces latest.md with an older report", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const newerMarkdown = "20.08.2026-21.08.2026\n\nБолее новый отчёт\n";
+  await writeFile(path.join(reportsDirectory, "2026-08-21.md"), newerMarkdown, "utf8");
+  await writeFile(path.join(reportsDirectory, "latest.md"), newerMarkdown, "utf8");
+  const { fetchHistory } = injectedFetch({
+    geranium_chronicles: chronologyMessages(),
+    kpszsu: [firstDetectionMessage(), officialPpoMessage()],
+  });
+
+  const result = await generateDailyReport({
+    reportDate: REPORT_DATE,
+    now: RUN_AT,
+    fetchHistory,
+    reportsDirectory,
+  });
+
+  assert.equal(result.status, "published");
+  assert.equal(result.paths.latestUpdated, false);
+  assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), newerMarkdown);
+  assert.equal(await readFile(path.join(reportsDirectory, "2026-08-18.md"), "utf8"), result.markdown);
+});
+
+test("waits instead of publishing a partial fallback when monitoring sources fail", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const fetchHistory = async (handle) => {
+    if (handle === "geranium_chronicles") return chronologyMessages();
+    if (handle === "kpszsu") return [firstDetectionMessage()];
+    if (handle === "ua_ppo_monitor") {
+      return [message(
+        "ua_ppo_monitor",
+        801,
+        "2026-08-18T04:55:00.000Z",
+        "Подтверждены пуски ударных БПЛА из Халино.",
+      )];
+    }
+    throw new Error(`${handle} unavailable`);
+  };
+
+  const result = await generateDailyReport({
+    reportDate: REPORT_DATE,
+    now: RUN_AT,
+    fetchHistory,
+    reportsDirectory,
+  });
+
+  assert.deepEqual(result, { status: "waiting-for-launch-sources", reportDate: REPORT_DATE });
+  await assert.rejects(access(path.join(reportsDirectory, "2026-08-18.md")));
+  await assert.rejects(access(path.join(reportsDirectory, "latest.md")));
 });
 
 test("waits without writing report files while the requested chronicle is missing", async (t) => {

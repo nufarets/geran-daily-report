@@ -28,9 +28,11 @@ permissions:
 concurrency:
   group: daily-report-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   publish:
+    if: github.event_name != 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -51,6 +53,7 @@ jobs:
         env:
           REPORT_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.report_date || '' }}
           FORCE_UPDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_update && '1' || '0' }}
+          REQUIRE_PUBLICATION: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '10 12 * * *') && '1' || '0' }}
 
       - name: Commit report when it changed
         shell: bash

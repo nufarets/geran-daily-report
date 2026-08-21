@@ -90,6 +90,41 @@ test("finds the first wave message after 12:20 and ignores reconnaissance or iso
   assert.equal(result.sourceUrl, "https://t.me/kpszsu/3");
 });
 
+test("keeps an explicit strike-UAV alert even when the same message mentions reconnaissance", () => {
+  const result = findFirstStrikeUavMessage([
+    {
+      channel: "kpszsu",
+      messageId: 10,
+      datetime: "2026-08-17T09:31:00Z",
+      text: "Разведывательный БПЛА остаётся в воздухе. На Сумщині ударні БПЛА направляються до цілі.",
+    },
+  ], {
+    windowStart: "2026-08-17T09:20:00Z",
+    windowEnd: "2026-08-18T05:10:00Z",
+  });
+
+  assert.equal(result.messageId, 10);
+  assert.equal(result.timeLabel, "12:31");
+  assert.equal(result.regionLabel, "Сумская область");
+});
+
+test("uses an emoji strike clause alongside a separate reconnaissance alert", () => {
+  const result = findFirstStrikeUavMessage([
+    {
+      channel: "kpszsu",
+      messageId: 11,
+      datetime: "2026-08-17T09:32:00Z",
+      text: "Розвідувальний БпЛА на Сумщині. 🛵 БпЛА на Харківщині.",
+    },
+  ], {
+    windowStart: "2026-08-17T09:20:00Z",
+    windowEnd: "2026-08-18T05:10:00Z",
+  });
+
+  assert.equal(result.messageId, 11);
+  assert.equal(result.regionLabel, "Харьковская область");
+});
+
 test("finds and joins a split daily chronicle", () => {
   const messages = [
     {
@@ -123,6 +158,85 @@ test("finds and joins a split daily chronicle", () => {
   assert.match(result.text, /14:30 Николаев/u);
   assert.match(result.text, /06:37 Бровары/u);
   assert.equal(result.sourceUrls.length, 2);
+});
+
+test("waits for a structurally incomplete split part but accepts a complete single post", () => {
+  const title = "Хроника ударов по территории Украины 17 августа 2026 – 18 августа 2026 года.";
+  const completeSinglePost = {
+    channel: "geranium_chronicles",
+    messageId: 81000,
+    datetime: "2026-08-18T05:00:00Z",
+    text: `${title}\n17 августа 2026 года.\n• 14:30 Николаев – взрыв. Герань-4.`,
+  };
+  assert.ok(findAndMergeChronicle([completeSinglePost], {
+    startDate: "2026-08-17",
+    endDate: "2026-08-18",
+  }));
+
+  const truncatedAtTelegramLimit = {
+    ...completeSinglePost,
+    messageId: 81001,
+    text: `${title}\n${"Описание опубликованных событий. ".repeat(125)}\n17 августа 2026 года.\n• 23:50 Одесса – взрывы.`,
+  };
+  assert.ok([...truncatedAtTelegramLimit.text].length >= 4000);
+  assert.equal(findAndMergeChronicle([truncatedAtTelegramLimit], {
+    startDate: "2026-08-17",
+    endDate: "2026-08-18",
+  }), null);
+
+  const continued = findAndMergeChronicle([
+    truncatedAtTelegramLimit,
+    {
+      channel: "geranium_chronicles",
+      messageId: 81002,
+      datetime: "2026-08-18T05:01:00Z",
+      text: "18 августа 2026 года.\n• 00:30 Черное море – взрыв. Герань.",
+    },
+  ], {
+    startDate: "2026-08-17",
+    endDate: "2026-08-18",
+  });
+  assert.deepEqual(continued.messages.map((message) => message.messageId), [81001, 81002]);
+});
+
+test("gives a newly published single chronicle time for an unmarked continuation", () => {
+  const title = "Хроника ударов по территории Украины 16 августа 2026 – 17 августа 2026 года.";
+  const firstPart = {
+    channel: "geranium_chronicles",
+    messageId: 79983,
+    datetime: "2026-08-17T04:01:08Z",
+    text: `${title}\n16 августа 2026 года.\n• 23:50 Одесса – взрывы. Герани.\nhttps://t.me/lost_armour/10842`,
+  };
+
+  assert.equal(findAndMergeChronicle([firstPart], {
+    startDate: "2026-08-16",
+    endDate: "2026-08-17",
+    now: "2026-08-17T04:03:00Z",
+    continuationGraceMs: 5 * 60 * 1000,
+  }), null);
+
+  assert.ok(findAndMergeChronicle([firstPart], {
+    startDate: "2026-08-16",
+    endDate: "2026-08-17",
+    now: "2026-08-17T04:07:00Z",
+    continuationGraceMs: 5 * 60 * 1000,
+  }));
+
+  const merged = findAndMergeChronicle([
+    firstPart,
+    {
+      channel: "geranium_chronicles",
+      messageId: 79984,
+      datetime: "2026-08-17T04:02:00Z",
+      text: "17 августа 2026 года.\n• 00:25 Херсон – взрыв. Герань.",
+    },
+  ], {
+    startDate: "2026-08-16",
+    endDate: "2026-08-17",
+    now: "2026-08-17T04:03:00Z",
+    continuationGraceMs: 5 * 60 * 1000,
+  });
+  assert.deepEqual(merged.messages.map((message) => message.messageId), [79983, 79984]);
 });
 
 test("parses and groups only Geran events after the first detection", () => {
@@ -163,6 +277,34 @@ test("parses and groups only Geran events after the first detection", () => {
 
   const odesa = chronology.regions.find((region) => region.name === "Одесская область");
   assert.deepEqual(odesa.locations.at(-1), { name: "АЧМ", times: ["00:30"] });
+});
+
+test("accepts live dash separators without spaces and preserves time or city hyphens", () => {
+  const chronology = parseGeranChronology(`
+17 августа 2026 года.
+• 13:00 Николаев -взрыв. Герань.
+• 14:00 Одесса- взрыв. Герань-4.
+• 15:00 Харьков –взрыв. Герань.
+• 16:00-16:10 Ивано-Франковск- мощный взрыв. Герань-4.
+`, {
+    startDate: "2026-08-17",
+    endDate: "2026-08-18",
+    startTime: "12:20",
+  });
+
+  assert.deepEqual(
+    chronology.events.map(({ timeLabel, location, region }) => ({ timeLabel, location, region })),
+    [
+      { timeLabel: "13:00", location: "Николаев", region: "Николаевская область" },
+      { timeLabel: "14:00", location: "Одесса", region: "Одесская область" },
+      { timeLabel: "15:00", location: "Харьков", region: "Харьковская область" },
+      {
+        timeLabel: "16:00-16:10",
+        location: "Ивано-Франковск",
+        region: "Ивано-Франковская область",
+      },
+    ],
+  );
 });
 
 test("assigns every location to its own region in compound real-world subjects", () => {
@@ -320,6 +462,17 @@ test("returns null when the official PVO summary is not available", () => {
   );
 });
 
+test("renders consecutive official PVO counts with a Markdown hard line break", () => {
+  const markdown = renderMarkdownReport({
+    startDate: "2026-08-17",
+    endDate: "2026-08-18",
+    chronology: { regions: [] },
+    ppo: { launched: 147, neutralized: 111 },
+  });
+
+  assert.match(markdown, /Запущено 147 БПЛА {2}\nСбито\/локационно потеряно 111/u);
+});
+
 test("uses only confirmed launches from the allowed monitoring channels and deduplicates", () => {
   const places = parseLaunchPlaces([
     {
@@ -367,6 +520,50 @@ test("uses only confirmed launches from the allowed monitoring channels and dedu
   ]);
   assert.equal(normalizeLaunchPlace("Цимбулово"), "Орел");
   assert.equal(normalizeLaunchPlace("Приморсько-Ахтарськ – рф."), "Приморско-Ахтарск");
+});
+
+test("rejects negated launches and places mentioned only in a rocket-launch clause", () => {
+  const places = parseLaunchPlaces([
+    {
+      channel: "ua_ppo_monitor",
+      messageId: 40,
+      datetime: "2026-08-17T23:00:00Z",
+      text: "Пуски Гераней из Миллерово не подтверждены.",
+    },
+    {
+      channel: "StrategicaviationT",
+      messageId: 41,
+      datetime: "2026-08-17T23:05:00Z",
+      text: "Пуски ракет из Цимбулово. Герани уже в воздухе.",
+    },
+    {
+      channel: "StrategicaviationT",
+      messageId: 411,
+      datetime: "2026-08-17T23:06:00Z",
+      text: "Пуски ракет из Цимбулово\nГерани уже в воздухе",
+    },
+    {
+      channel: "Ukrainian_Intelligence",
+      messageId: 42,
+      datetime: "2026-08-17T23:10:00Z",
+      text: "Подтверждены пуски Гераней из Халино. Пуски ракет из Цимбулово.",
+    },
+  ]);
+
+  assert.deepEqual(places, ["Курск"]);
+});
+
+test("keeps confirmed launch locations listed on following lines", () => {
+  const places = parseLaunchPlaces([
+    {
+      channel: "ua_ppo_monitor",
+      messageId: 50,
+      datetime: "2026-08-17T23:00:00Z",
+      text: "Подтверждены пуски Гераней:\nХалино\nМиллерово",
+    },
+  ]);
+
+  assert.deepEqual(places, ["Курск", "Ростов"]);
 });
 
 test("renders the example report and omits unavailable PVO counts", () => {

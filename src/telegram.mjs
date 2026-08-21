@@ -61,7 +61,13 @@ function findTagEnd(html, start) {
     if (quote) {
       if (character === quote) quote = null;
     } else if (character === "\"" || character === "'") {
-      quote = character;
+      // A quote opens an attribute value only when it follows '='. Telegram
+      // occasionally emits malformed reply tags such as `href="..." "="">`.
+      // Treating every stray quote as an opener makes the scanner consume the
+      // following message and assign its footer timestamp to the previous one.
+      let previous = index - 1;
+      while (previous > start && /\s/u.test(html[previous])) previous -= 1;
+      if (html[previous] === "=") quote = character;
     } else if (character === ">") {
       return index;
     }
@@ -214,7 +220,11 @@ function parseIdentity(raw) {
 
 function parseTelegramRecords(input) {
   const { html, nodes } = parseHtmlNodes(input);
-  const messageNodes = nodes.filter((node) => node.attributes["data-post"] && parseIdentity(node.attributes["data-post"]));
+  const messageNodes = nodes.filter((node) => (
+    hasClass(node, "tgme_widget_message")
+    && node.attributes["data-post"]
+    && parseIdentity(node.attributes["data-post"])
+  ));
 
   return messageNodes.map((messageNode) => {
     const identity = parseIdentity(messageNode.attributes["data-post"]);
@@ -242,7 +252,19 @@ function parseTelegramRecords(input) {
       .trim();
 
     const timeNodes = ownedNodes.filter((node) => node.name === "time" && node.attributes.datetime);
-    const datetime = timeNodes.at(-1)?.attributes.datetime ?? null;
+    const matchingTimeNodes = timeNodes.filter((node) => {
+      for (let ancestor = node.parent; ancestor && ancestor !== messageNode; ancestor = ancestor.parent) {
+        if (ancestor.name !== "a" || typeof ancestor.attributes.href !== "string") continue;
+        const match = ancestor.attributes.href.match(/\/([^/?#]+)\/(\d+)(?:[/?#]|$)/u);
+        if (
+          match
+          && match[1].toLowerCase() === identity.channel.toLowerCase()
+          && Number.parseInt(match[2], 10) === identity.messageId
+        ) return true;
+      }
+      return false;
+    });
+    const datetime = (matchingTimeNodes.at(-1) ?? timeNodes.at(-1))?.attributes.datetime ?? null;
     const replyNode = ownedNodes.find((node) => (
       hasClass(node, "tgme_widget_message_reply")
       && typeof node.attributes.href === "string"
@@ -302,6 +324,19 @@ function parseBoundary(value, label, fallback) {
 function messageTimestamp(message) {
   const timestamp = Date.parse(message.datetime ?? "");
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function isRecognizableTerminalPage(html, channel) {
+  const historyContainer = /<(?:section|div)\b[^>]*\bclass\s*=\s*(?:"[^"]*\btgme_channel_history\b[^"]*"|'[^']*\btgme_channel_history\b[^']*')[^>]*>/iu;
+  const channelUrl = new RegExp(
+    String.raw`https?:\/\/t\.me\/(?:s\/)?${escapeRegExp(channel)}(?=[/"'?#<\s])`,
+    "iu",
+  );
+  return historyContainer.test(html) && channelUrl.test(html);
 }
 
 async function responseText(response, url) {
@@ -368,15 +403,35 @@ export async function fetchTelegramHistory(handle, options = {}) {
   const messagesById = new Map();
   const usedCursors = new Set();
   let before = null;
+  let completedFiniteRange = !Number.isFinite(fromTimestamp);
 
   for (let page = 0; page < maxPages; page += 1) {
     const url = new URL(`https://t.me/s/${channel}`);
     if (before !== null) url.searchParams.set("before", String(before));
     const requestUrl = url.toString();
     const html = await fetchPage(fetchImpl, requestUrl, { retries, timeoutMs });
-    const pageRecords = parseTelegramRecords(html)
+    const allPageRecords = parseTelegramRecords(html);
+    const pageRecords = allPageRecords
       .filter((message) => message.channel.toLowerCase() === expectedChannel);
-    if (!pageRecords.length) break;
+    if (!pageRecords.length) {
+      // Telegram's real end-of-history response is an empty, recognizable
+      // channel history page. Only accept it after at least one cursor hop;
+      // an empty first response or generic/challenge HTML must fail closed.
+      if (
+        before !== null
+        && allPageRecords.length === 0
+        && isRecognizableTerminalPage(html, channel)
+      ) {
+        completedFiniteRange = true;
+        break;
+      }
+      throw new Error(`Telegram preview returned no message records for ${channel}`);
+    }
+
+    const invalidTimestamp = pageRecords.find((message) => messageTimestamp(message) === null);
+    if (invalidTimestamp) {
+      throw new Error(`Telegram message ${invalidTimestamp.id} has no valid timestamp`);
+    }
 
     for (const message of pageRecords) {
       const timestamp = messageTimestamp(message);
@@ -392,12 +447,24 @@ export async function fetchTelegramHistory(handle, options = {}) {
     }
 
     const pageTimestamps = pageRecords.map(messageTimestamp).filter((timestamp) => timestamp !== null);
-    if (Number.isFinite(fromTimestamp) && pageTimestamps.length && Math.min(...pageTimestamps) <= fromTimestamp) break;
+    if (Number.isFinite(fromTimestamp) && Math.min(...pageTimestamps) <= fromTimestamp) {
+      completedFiniteRange = true;
+      break;
+    }
 
     const oldestMessageId = Math.min(...pageRecords.map((message) => message.messageId));
-    if (!Number.isSafeInteger(oldestMessageId) || usedCursors.has(oldestMessageId) || oldestMessageId === before) break;
+    if (!Number.isSafeInteger(oldestMessageId)) {
+      throw new Error(`Telegram preview returned an invalid cursor for ${channel}`);
+    }
+    if (usedCursors.has(oldestMessageId) || oldestMessageId === before) {
+      throw new Error(`Telegram pagination stalled at message ${oldestMessageId} for ${channel}`);
+    }
     usedCursors.add(oldestMessageId);
     before = oldestMessageId;
+  }
+
+  if (!completedFiniteRange) {
+    throw new Error(`Telegram history for ${channel} exceeded maxPages=${maxPages} before reaching from`);
   }
 
   return [...messagesById.values()].sort((left, right) => {
