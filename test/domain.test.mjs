@@ -388,7 +388,7 @@ test("renders the example report and omits unavailable PVO counts", () => {
 
   assert.match(markdown, /^17\.08\.2026-18\.08\.2026\n/u);
   assert.match(markdown, /Первые группы БПЛА обнаружены в Запорожской области в 12:46/u);
-  assert.match(markdown, /Днепропетровская область\n\n\*15:40, 20:05\* - Кривой Рог {2}\n\*22:55\* - Павлоград {2}\n/u);
+  assert.match(markdown, /Днепропетровская область\n\n15:40, 20:05 - Кривой Рог {2}\n22:55 - Павлоград {2}\n/u);
   assert.doesNotMatch(markdown, /Запущено/u);
   assert.doesNotMatch(markdown, /Сбито\/локационно/u);
   assert.match(
