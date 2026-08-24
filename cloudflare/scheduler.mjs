@@ -82,11 +82,7 @@ export async function dispatchIfReportMissing({
     "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + reportPath
     + "?ref=" + encodeURIComponent(ref);
   const reportResponse = await fetchImpl(contentsUrl, {
-    headers: {
-      accept: "application/vnd.github+json",
-      "user-agent": "geran-daily-report-scheduler/1.0",
-      "x-github-api-version": GITHUB_API_VERSION,
-    },
+    headers: githubHeaders(token.trim()),
   });
 
   if (reportResponse.status === 200) {

@@ -53,7 +53,7 @@ test("does not dispatch when the dated report already exists", async () => {
   });
   assert.equal(result.status, "already-published");
   assert.equal(requests.length, 1);
-  assert.doesNotMatch(JSON.stringify(requests[0].options.headers), /secret/u);
+  assert.equal(requests[0].options.headers.authorization, "Bearer secret");
 });
 
 test("dispatches an idempotent soft retry when the report is missing", async () => {
