@@ -3,7 +3,7 @@
   "name": "geran-daily-report-scheduler",
   "main": "cloudflare/scheduler.mjs",
   "compatibility_date": "2026-08-24",
-  "workers_dev": true,
+  "workers_dev": false,
   "observability": {
     "enabled": true
   },
