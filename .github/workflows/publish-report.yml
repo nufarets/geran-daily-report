@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      external_retry:
+        description: "Служебный мягкий повтор внешнего планировщика"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "10,20,30,40,50 8 * * *"
       timezone: "Europe/Moscow"
@@ -53,7 +58,7 @@ jobs:
         env:
           REPORT_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.report_date || '' }}
           FORCE_UPDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_update && '1' || '0' }}
-          REQUIRE_PUBLICATION: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '10 12 * * *') && '1' || '0' }}
+          REQUIRE_PUBLICATION: ${{ ((github.event_name == 'workflow_dispatch' && !inputs.external_retry) || github.event.schedule == '10 12 * * *') && '1' || '0' }}
 
       - name: Commit report when it changed
         shell: bash

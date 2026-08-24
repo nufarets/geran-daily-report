@@ -9,6 +9,11 @@
   },
   "scripts": {
     "test": "node --test --test-isolation=none",
-    "generate": "node src/generate-report.mjs"
+    "generate": "node src/generate-report.mjs",
+    "scheduler:check": "wrangler deploy --dry-run",
+    "scheduler:deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.125.0"
   }
 }

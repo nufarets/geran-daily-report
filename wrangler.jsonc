@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "geran-daily-report-scheduler",
+  "main": "cloudflare/scheduler.mjs",
+  "compatibility_date": "2026-08-24",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": [
+      "*/5 5-9 * * *"
+    ]
+  }
+}
