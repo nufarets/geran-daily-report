@@ -183,16 +183,16 @@ test("publishes the 17–18 report to dated/latest files and makes a repeated ru
   }
 
   assert.match(result.markdown, /^17\.08\.2026-18\.08\.2026\n/u);
-  assert.match(result.markdown, /Первые группы БПЛА обнаружены в Запорожской области в 12:46/u);
-  assert.match(result.markdown, /Николаевская область\n\n14:30 - Николаев {2}\n/u);
-  assert.match(result.markdown, /Запорожская область\n\n20:15 - взрыв в области {2}\n/u);
+  assert.doesNotMatch(result.markdown, /Первые группы БПЛА обнаружены/u);
+  assert.match(result.markdown, /Николаевская область {2}\n14:30 - Николаев {2}\n/u);
+  assert.match(result.markdown, /Запорожская область {2}\n20:15 - взрыв в области {2}\n/u);
   assert.match(result.markdown, /Запущено 147 БПЛА/u);
   assert.match(result.markdown, /Сбито\/локационно потеряно 111/u);
   assert.match(
     result.markdown,
-    /Точки пусков по версии Повітряних сил: Курск, Ростов, Чауда, Гвардейское, Приморско-Ахтарск/u,
+    /Точки пусков по версии поветряных: Курск, Ростов, Чауда, Гвардейское, Приморско-Ахтарск/u,
   );
-  assert.match(result.markdown, /На данный момент налет продолжается/u);
+  assert.doesNotMatch(result.markdown, /На данный момент налет продолжается/u);
   assert.match(result.markdown, /Источники:/u);
 
   const callCountAfterPublish = calls.length;

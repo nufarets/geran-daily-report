@@ -47,10 +47,12 @@ export const CITY_TO_REGION = Object.freeze({
   Лозовая: "Харьковская область",
   Жмеринка: "Винницкая область",
   Ильичевск: "Одесская область",
+  Рени: "Одесская область",
   Харьков: "Харьковская область",
   Днепр: "Днепропетровская область",
   Днепропетровск: "Днепропетровская область",
   Полтава: "Полтавская область",
+  Кременчуг: "Полтавская область",
   Херсон: "Херсонская область",
   Житомир: "Житомирская область",
   Черкассы: "Черкасская область",
@@ -143,10 +145,12 @@ const CITY_DEFINITIONS = Object.freeze([
   ["Лозовая", "Харьковская область", /(?<!\p{L})лозов(?:ая|ой|ую)(?!\p{L})/giu],
   ["Жмеринка", "Винницкая область", /(?<!\p{L})жмеринк(?:а|и|е|у|ой)(?!\p{L})/giu],
   ["Ильичевск", "Одесская область", /(?<!\p{L})ильич[её]вск(?:а|е|у|ом)?(?!\p{L})/giu],
+  ["Рени", "Одесская область", /(?<!\p{L})рен[иі](?!\p{L})/giu],
   ["Харьков", "Харьковская область", /(?<!\p{L})(?:харьков|харків)(?:а|е|у|ом)?(?!\p{L})/giu],
   ["Днепр", "Днепропетровская область", /(?<!\p{L})(?:днепр|дніпро)(?:а|е|у|ом)?(?!\p{L})/giu],
   ["Днепропетровск", "Днепропетровская область", /(?<!\p{L})(?:днепропетровск|дніпропетровськ)(?:а|е|у|ом)?(?!\p{L})/giu],
   ["Полтава", "Полтавская область", /(?<!\p{L})полтав(?:а|ы|е|у|ой)(?!\p{L})/giu],
+  ["Кременчуг", "Полтавская область", /(?<!\p{L})кременчуг(?:а|е|у|ом)?(?!\p{L})/giu],
   ["Херсон", "Херсонская область", /(?<!\p{L})херсон(?:а|е|у|ом)?(?!\p{L})/giu],
   ["Житомир", "Житомирская область", /(?<!\p{L})житомир(?:а|е|у|ом)?(?!\p{L})/giu],
   ["Черкассы", "Черкасская область", /(?<!\p{L})черкасс(?:ы|ах|ами)?(?!\p{L})/giu],
@@ -588,7 +592,7 @@ function cleanFallbackLocation(subject, removedText) {
   let value = subject;
   for (const part of removedText) value = value.replace(part, " ");
   return value
-    .replace(/(?<!\p{L})(?:окрестност\p{L}*|пригород\p{L}*|район(?:е|а)?|н\.?\s*п\.?)(?!\p{L})/giu, " ")
+    .replace(/(?<!\p{L})(?:окрес(?:т)?ност\p{L}*|пригород\p{L}*|район(?:е|а)?|н\.?\s*п\.?)(?!\p{L})/giu, " ")
     .replace(/(?<!\p{L})(?:области?|область|и|в|на|возле|около)(?!\p{L})/giu, " ")
     .replace(/[«»"'(),]/gu, " ")
     .replace(/\s+/gu, " ")
@@ -933,14 +937,6 @@ function displayDate(value) {
     : String(value ?? "");
 }
 
-function regionInPrepositionalCase(value) {
-  return String(value ?? "")
-    .replace(/ская область$/u, "ской области")
-    .replace(/цкая область$/u, "цкой области")
-    .replace(/ая область$/u, "ой области")
-    .replace(/яя область$/u, "ей области");
-}
-
 /**
  * Render model:
  * { startDate, endDate, firstDetection, chronology, ppo, launchPlaces,
@@ -956,26 +952,13 @@ export function renderMarkdownReport(model = {}) {
   ]);
   const lines = [`${displayDate(model.startDate)}-${displayDate(model.endDate)}`, "", "Хронология"];
 
-  if (model.firstDetection?.timeLabel) {
-    const region = model.firstDetection.regionLabel
-      ? ` в ${regionInPrepositionalCase(model.firstDetection.regionLabel)}`
-      : "";
-    lines.push(
-      "",
-      `Первые группы БПЛА обнаружены${region} в ${model.firstDetection.timeLabel}`,
-    );
-  }
-
   for (const region of regions) {
-    lines.push("", region.name, "");
+    lines.push("", `${region.name}  `);
     for (const location of region.locations ?? []) {
       const times = Array.isArray(location.times) ? location.times.join(", ") : location.timeLabel;
       if (times && location.name) lines.push(`${times} - ${location.name}  `);
     }
   }
-
-  const ongoing = ppo?.ongoing ?? ppo?.statusOngoing ?? model.ongoing;
-  if (ongoing === true) lines.push("", "На данный момент налет продолжается");
 
   const launched = ppo?.launched;
   const neutralized = ppo?.neutralized ?? ppo?.shotDownOrLost ?? ppo?.shotDown;
@@ -991,7 +974,7 @@ export function renderMarkdownReport(model = {}) {
       if (launched != null || neutralized != null) lines.push("");
       const official = model.launchSource === "official" || (!model.launchSource && Boolean(ppo));
       const label = official
-        ? "Точки пусков по версии Повітряних сил"
+        ? "Точки пусков по версии поветряных"
         : "Точки пусков по данным мониторинговых каналов";
       lines.push(`${label}: ${launchPlaces.join(", ")}`);
     }

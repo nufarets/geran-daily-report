@@ -399,6 +399,31 @@ test("normalizes inflected locality names found in live chronicles", () => {
   ]);
 });
 
+test("maps Kremenchuk and Reni from the 25–26 August chronicle without an undefined region", () => {
+  const chronology = parseGeranChronology(`
+25 августа 2026 года.
+• 13:07-14:15 Окресности Кременчуга - взрывы. Герани.
+26 августа 2026 года.
+• 02:45-03:00 Рени - взрывы. Герани.
+`, {
+    startDate: "2026-08-25",
+    endDate: "2026-08-26",
+    startTime: "12:20",
+  });
+
+  assert.deepEqual(chronology.regions, [
+    {
+      name: "Полтавская область",
+      locations: [{ name: "Кременчуг", times: ["13:07-14:15"] }],
+    },
+    {
+      name: "Одесская область",
+      locations: [{ name: "Рени", times: ["02:45-03:00"] }],
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(chronology), /Неопределённая область/u);
+});
+
 test("treats a region-only Donbass subject as Donetsk region", () => {
   const chronology = parseGeranChronology(`
 17 августа 2026 года.
@@ -584,8 +609,9 @@ test("renders the example report and omits unavailable PVO counts", () => {
   });
 
   assert.match(markdown, /^17\.08\.2026-18\.08\.2026\n/u);
-  assert.match(markdown, /Первые группы БПЛА обнаружены в Запорожской области в 12:46/u);
-  assert.match(markdown, /Днепропетровская область\n\n15:40, 20:05 - Кривой Рог {2}\n22:55 - Павлоград {2}\n/u);
+  assert.doesNotMatch(markdown, /Первые группы БПЛА обнаружены/u);
+  assert.match(markdown, /Днепропетровская область {2}\n15:40, 20:05 - Кривой Рог {2}\n22:55 - Павлоград {2}\n/u);
+  assert.doesNotMatch(markdown, /область\s*\n\s*\n\d{2}:\d{2}/u);
   assert.doesNotMatch(markdown, /Запущено/u);
   assert.doesNotMatch(markdown, /Сбито\/локационно/u);
   assert.match(
