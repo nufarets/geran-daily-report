@@ -487,6 +487,122 @@ test("returns null when the official PVO summary is not available", () => {
   );
 });
 
+test("uses the UAV subtotal from the neutralized list, never the mixed-target total", () => {
+  const result = parseOfficialPpo([{
+    channel: "kpszsu",
+    datetime: "2026-09-22T05:01:01Z",
+    text: `ЗБИТО/ПОДАВЛЕНО 186 ЦІЛЕЙ ПРОТИВНИКА
+У ніч на 22 вересня противник атакував:
+- 4 крилатими ракетами;
+- 8 "Бандероль"/"Дань-Т";
+- 212 ударними БпЛА типу Shahed.
+За попередніми даними збито/подавлено 186 цілей:
+
+- 1 крилату ракету "Калібр";
+- 8 "Бандероль"/"Дань-Т";
+- 177 БпЛА типу Shahed, Гербера та дронів інших типів.
+Зафіксовано влучання на 22 локаціях.`,
+  }], { reportDate: "2026-09-22" });
+
+  assert.equal(result.launched, 212);
+  assert.equal(result.neutralized, 177);
+});
+
+test("does not substitute a target total or a launch/impact count for neutralized UAVs", () => {
+  for (const summary of [
+    "ЗБИТО/ПОДАВЛЕНО 186 ЦІЛЕЙ ПРОТИВНИКА",
+    "Збито/подавлено 186 цілей:\n- 1 крилату ракету;\n- 8 Бандероль/Дань-Т.",
+    "Збито/подавлено 186 цілей:\n- 1 крилату ракету.\nЗафіксовано влучання:\n- 35 БпЛА типу Shahed.",
+  ]) {
+    const result = parseOfficialPpo([{
+      channel: "kpszsu",
+      text: `Противник атакував:\n- 212 ударними БпЛА типу Shahed.\n${summary}`,
+    }]);
+    assert.equal(result.launched, 212);
+    assert.equal(result.neutralized, null, summary);
+  }
+});
+
+test("still accepts UAV counts stated directly and ignores a mixed-target headline", () => {
+  for (const summary of [
+    "ЗБИТО/ПОДАВЛЕНО 177 БПЛА",
+    "Збито / подавлено 177 ворожих БпЛА типу Shahed та Гербера.",
+    "Знешкоджено 177 ударних БпЛА.",
+    "ЗБИТО/ПОДАВЛЕНО 186 ЦІЛЕЙ\nЗбито 1 крилату ракету. Збито 177 ворожих БпЛА.",
+    "Сбито/локационно потеряно 177 БПЛА.",
+  ]) {
+    assert.equal(parseOfficialPpo([{ text: summary }])?.neutralized, 177, summary);
+  }
+});
+
+test("selects the Shahed/Gerbera group even when another list item also calls Banderol a UAV", () => {
+  assert.equal(parseOfficialPpo([{ text: `Збито/подавлено 186 цілей:
+- 1 крилату ракету;
+- 8 БпЛА типу "Бандероль"/"Дань-Т";
+- 177 БпЛА типу Shahed, Гербера та дронів інших типів.` }])?.neutralized, 177);
+  assert.equal(parseOfficialPpo([{ text: 'Збито 8 БпЛА типу "Бандероль"/"Дань-Т".' }]), null);
+  assert.equal(parseOfficialPpo([{ text: "Збито/подавлено 147 ворожих БпЛА типу Shahed, Гербера, дронів інших типів та 1 «Бандероль»/«Дань-Т»." }])?.neutralized, 147);
+});
+
+test("does not treat a date range in the title as a day heading", () => {
+  const chronology = parseGeranChronology(`
+Хроника ударов по территории Украины 21 сентября 2026 – 22 сентября 2026 года.
+• 08:30 Киев – взрыв. Герань.
+• 23:55 Киев – взрыв. Герань.
+• 00:15 Киев – взрыв. Герань.
+`, { startDate: "2026-09-21", endDate: "2026-09-22", startTime: "12:20" });
+  assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+    ["2026-09-21", "23:55"],
+    ["2026-09-22", "00:15"],
+  ]);
+});
+
+test("repairs a duplicated end-date heading only when two day sections cross midnight", () => {
+  const chronology = parseGeranChronology(`
+Хроника ударов по территории Украины 21 сентября 2026 – 22 сентября 2026 года.
+22 сентября 2026 года.
+• 07:35 Вознесенск Николаевской области – взрыв. Герань.
+• 12:30 Николаев – взрыв. Герань.
+• 23:55 Черновцы – взрыв. Герань.
+22 сентября 2026 года.
+• 00:15 Новоднестровск Черновицкой области – взрыв. Герань.
+• 07:10 Винница – взрыв. Герань.
+`, { startDate: "2026-09-21", endDate: "2026-09-22", startTime: "12:20" });
+
+  assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+    ["2026-09-21", "12:30"],
+    ["2026-09-21", "23:55"],
+    ["2026-09-22", "00:15"],
+    ["2026-09-22", "07:10"],
+  ]);
+});
+
+test("keeps legitimate end-date-only and repeated same-day headings", () => {
+  const chronology = parseGeranChronology(`
+22 сентября 2026 года.
+• 00:15 Киев – взрыв. Герань.
+22 сентября 2026 года.
+• 07:10 Винница – взрыв. Герань.
+`, { startDate: "2026-09-21", endDate: "2026-09-22", startTime: "12:20" });
+  assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+    ["2026-09-22", "00:15"],
+    ["2026-09-22", "07:10"],
+  ]);
+});
+
+test("preserves events with the clock typos in the September 22 source", () => {
+  const chronology = parseGeranChronology(`
+21 сентября 2026 года.
+• 18:33.Днепропетровск – взрыв. Герань.
+• 20:50-20-55 Буча и окрестности Киева Киевской области – взрывы. Герани.
+`, { startDate: "2026-09-21", endDate: "2026-09-22", startTime: "12:20" });
+  assert.deepEqual(chronology.events.map(({ timeLabel, location }) => [timeLabel, location]), [
+    ["18:33", "Днепропетровск"],
+    ["20:50-20:55", "Буча"],
+    ["20:50-20:55", "Киев"],
+  ]);
+});
+
 test("renders consecutive official PVO counts with a Markdown hard line break", () => {
   const markdown = renderMarkdownReport({
     startDate: "2026-08-17",

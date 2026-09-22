@@ -79,6 +79,31 @@ async function temporaryReportsDirectory(testContext) {
   return directory;
 }
 
+test("rebuilds September 22 from archived sources with UAV-only totals and the correct day boundary", async (t) => {
+  const messages = JSON.parse(await readFile(new URL("./fixtures/2026-09-22.json", import.meta.url), "utf8"));
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const result = await generateDailyReport({
+    reportDate: "2026-09-22",
+    now: new Date("2026-09-22T05:10:00Z"),
+    reportsDirectory,
+    fetchHistory: async (channel) => messages.filter((message) => message.channel === channel),
+  });
+
+  assert.equal(result.status, "published");
+  assert.equal(result.model.ppo.launched, 212);
+  assert.equal(result.model.ppo.neutralized, 177);
+  assert.equal(result.model.firstDetection.timeLabel, "12:20");
+  assert.deepEqual(result.model.chronology.events[0].times, ["12:30"]);
+  for (const event of result.model.chronology.events) {
+    assert.equal(event.date, event.timeLabel < "12:20" ? "2026-09-22" : "2026-09-21");
+  }
+  assert.match(result.markdown, /18:33/u);
+  assert.match(result.markdown, /20:50-20:55/u);
+  assert.doesNotMatch(result.markdown, /07:35|08:00|08:30|08:57|10:38|12:05/u);
+  assert.match(result.markdown, /Сбито\/локационно потеряно 177/u);
+  assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
+});
+
 test("rejects invalid or future report dates before touching sources or paths", async (t) => {
   const reportsDirectory = await temporaryReportsDirectory(t);
   let fetchCalls = 0;

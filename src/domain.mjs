@@ -479,21 +479,23 @@ export function findAndMergeChronicle(
 }
 
 function parseRussianDateHeading(line) {
-  const words = /(?:^|\s)(\d{1,2})\s+([а-яё]+)\s+(\d{4})\s+года?/iu.exec(line);
+  const words = /^(\d{1,2})\s+([а-яё]+)\s+(\d{4})\s+года?\.?$/iu.exec(line);
   if (words) {
     const month = RUSSIAN_MONTHS.indexOf(words[2].toLowerCase());
     if (month >= 0) return `${words[3]}-${String(month + 1).padStart(2, "0")}-${String(Number(words[1])).padStart(2, "0")}`;
   }
-  const numeric = /(?:^|\s)(\d{1,2})[./](\d{1,2})[./](\d{4})(?:\s|$)/u.exec(line);
+  const numeric = /^(\d{1,2})[./](\d{1,2})[./](\d{4})\.?$/u.exec(line);
   return numeric
     ? `${numeric[3]}-${String(Number(numeric[2])).padStart(2, "0")}-${String(Number(numeric[1])).padStart(2, "0")}`
     : null;
 }
 
-const CLOCK = String.raw`\d{1,2}\s*[:.]\s*\d{2}`;
-const CLOCK_OR_RANGE = String.raw`${CLOCK}(?:\s*[-–—]\s*${CLOCK})?`;
+const CLOCK = String.raw`(?:[01]?\d|2[0-3])\s*[:.]\s*[0-5]\d`;
+// Some source ranges use a dash instead of the second clock's colon: 20:50-20-55.
+const RANGE_END_CLOCK = String.raw`(?:[01]?\d|2[0-3])\s*[:.\-]\s*[0-5]\d`;
+const CLOCK_OR_RANGE = String.raw`${CLOCK}(?:\s*[-–—]\s*${RANGE_END_CLOCK})?`;
 const TIME_EXPRESSION = new RegExp(
-  String.raw`^\s*[•·▪️▫◾\-*]?\s*(${CLOCK_OR_RANGE}(?:(?:\s*,\s*|\s+и\s+)${CLOCK_OR_RANGE})*)\s+(.+)$`,
+  String.raw`^\s*[•·▪️▫◾\-*]?\s*(${CLOCK_OR_RANGE}(?:(?:\s*,\s*|\s+и\s+)${CLOCK_OR_RANGE})*)(?:\s+|\.\s*)(.+)$`,
   "iu",
 );
 
@@ -502,6 +504,7 @@ function normalizeClock(value) {
     .replace(/\s*[.]\s*/gu, ":")
     .replace(/\s*[:]\s*/gu, ":")
     .replace(/\s*[-–—]\s*/gu, "-")
+    .replace(/-(\d{1,2})-(\d{2})$/u, "-$1:$2")
     .replace(/^(\d):/u, "0$1:")
     .replace(/-(\d):/gu, "-0$1:")
     .trim();
@@ -522,12 +525,16 @@ function minuteOfClock(value, takeEnd = false) {
 
 function buildChronicleRecords(text, startDate, endDate) {
   const records = [];
+  const sections = [{ date: startDate ?? null, records: [] }];
   let date = startDate ?? null;
   let previousMinute = null;
   let current = null;
 
   const flush = () => {
-    if (current) records.push(current);
+    if (current) {
+      records.push(current);
+      sections.at(-1).records.push(current);
+    }
     current = null;
   };
 
@@ -538,6 +545,7 @@ function buildChronicleRecords(text, startDate, endDate) {
     if (headingDate) {
       flush();
       date = headingDate;
+      sections.push({ date: headingDate, records: [] });
       previousMinute = null;
       continue;
     }
@@ -565,6 +573,21 @@ function buildChronicleRecords(text, startDate, endDate) {
     }
   }
   flush();
+
+  // A source may accidentally label both days with the end date. Repair only
+  // the first populated section, with a second same-date section and a clear
+  // evening-to-morning rollover as evidence; keep genuine end-date-only posts.
+  const [firstSection, secondSection] = sections.filter((section) => section.records.length > 0);
+  if (
+    startDate && endDate && startDate < endDate
+    && firstSection?.date === endDate && secondSection?.date === endDate
+  ) {
+    const lastMinute = minuteOfClock(firstSection.records.at(-1).times.at(-1), true);
+    const nextMinute = minuteOfClock(secondSection.records[0].times[0]);
+    if (lastMinute >= 18 * 60 && nextMinute < 12 * 60 && lastMinute - nextMinute > 6 * 60) {
+      for (const record of firstSection.records) record.date = startDate;
+    }
+  }
   return records;
 }
 
@@ -782,15 +805,52 @@ export function normalizeLaunchPlace(value) {
     .trim();
 }
 
+const NEUTRALIZATION_ACTION = String.raw`(?<!\p{L})(?:(?:збито|сбито)(?:\s*/\s*(?:подавлено|локац(?:ійно|ионно)\s+(?:втрачен\p{L}*|потерян\p{L}*)))?|знешкоджено|нейтрализовано|знищено)`;
+const UAV_COUNT = String.raw`(\d{1,4})\s+(?:(?:ворож|ударн)\p{L}*\s+)*(?:бпла|безпілотник\p{L}*)(?!\p{L})`;
+
+function relevantUavCount(matches) {
+  const shahedGroup = matches.filter(({ text }) => /(?:shahed|шахед|гербер)/iu.test(text));
+  const candidates = shahedGroup.length ? shahedGroup : matches.filter(
+    ({ text }) => !/(?:бандерол|дань[-–—\s]*т)/iu.test(text),
+  );
+  const counts = [...new Set(candidates.map(({ count }) => count))];
+  return counts.length === 1 ? counts[0] : null;
+}
+
+function neutralizedUavCount(text) {
+  const listHeading = new RegExp(
+    String.raw`${NEUTRALIZATION_ACTION}\s+\d{1,4}\s+(?:(?:повітрян|воздушн|ворож)\p{L}*\s+)*(?:ціл\p{L}*|цел\p{L}*)(?:\s+противника)?\s*:`,
+    "giu",
+  );
+  const listItem = new RegExp(String.raw`^[-–—•▪▫➖]\s*${UAV_COUNT}`, "iu");
+
+  // Only a UAV entry in the neutralized-target list is a subtotal. Do not
+  // search the launch list or later impact statistics for a replacement.
+  for (const heading of text.matchAll(listHeading)) {
+    const entries = [];
+    for (const rawLine of text.slice(heading.index + heading[0].length).split(/\r?\n/u)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (!/^[-–—•▪▫➖]\s*\d/u.test(line)) break;
+      const match = listItem.exec(line);
+      if (match) entries.push({ count: Number(match[1]), text: line });
+    }
+    if (entries.length) return relevantUavCount(entries);
+  }
+
+  // A direct count must explicitly describe UAVs, never generic targets.
+  const direct = new RegExp(String.raw`${NEUTRALIZATION_ACTION}\s+${UAV_COUNT}[^\n.!?]*`, "giu");
+  return relevantUavCount([...text.matchAll(direct)].map((match) => ({
+    count: Number(match[1]), text: match[0],
+  })));
+}
+
 function officialStatsFromText(text) {
   const launched = extractNumber(text, [
     /(?:атакува\p{L}*|атакова\p{L}*|запущен\p{L}*|запущено)\s+(\d{1,4})(?:-?(?:ма|ми))?\s+(?:ударн\p{L}*\s+)?(?:бпла|безпілотник\p{L}*)/iu,
     /(\d{1,4})(?:-?(?:ма|ми))?\s+ударн\p{L}*\s+(?:бпла|безпілотник\p{L}*)/iu,
   ]);
-  const neutralized = extractNumber(text, [
-    /(?:збито|сбито)\s*\/\s*(?:подавлено|локац(?:ійно|ионно)\s+втрачен\p{L}*)\s+(\d{1,4})/iu,
-    /(?:знешкоджено|нейтрализовано|збито|сбито)\s+(\d{1,4})\s+(?:ворож\p{L}*\s+)?(?:бпла|безпілотник\p{L}*)/iu,
-  ]);
+  const neutralized = neutralizedUavCount(text);
   const ongoing = /атак\p{L}*[^.!?\n]{0,80}(?:триває|продолжается)/iu.test(text)
     ? true
     : /атак\p{L}*\s+(?:завершен\p{L}*|завершено)/iu.test(text)
