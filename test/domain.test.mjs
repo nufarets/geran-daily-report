@@ -199,6 +199,32 @@ test("waits for a structurally incomplete split part but accepts a complete sing
   assert.deepEqual(continued.messages.map((message) => message.messageId), [81001, 81002]);
 });
 
+test("joins nearby chronicle parts across media ID gaps of different sizes", () => {
+  for (const gap of [3, 5, 10]) {
+    const result = findAndMergeChronicle([
+      { channel: "geranium_chronicles", messageId: 86246, datetime: "2026-09-23T04:03:57Z",
+        text: "Хроника ударов 22 сентября 2026 – 23 сентября 2026 года.\n23 сентября 2026 года.\n• 23:55 Киев – взрыв. Герань." },
+      { channel: "geranium_chronicles", messageId: 86246 + gap, datetime: "2026-09-23T04:05:05Z",
+        text: "23 сентября 2026 года.\n• 00:05 Киев – взрыв. Герань." },
+    ], { startDate: "2026-09-22", endDate: "2026-09-23" });
+    assert.deepEqual(result.messages.map(m => m.messageId), [86246, 86246 + gap]);
+  }
+});
+
+test("does not join another daily chronicle, unrelated video timecodes, or distant adjacent IDs", () => {
+  const anchor = { channel: "geranium_chronicles", messageId: 86246, datetime: "2026-09-23T04:03:57Z",
+    text: "Хроника ударов 22 сентября 2026 – 23 сентября 2026 года.\n22 сентября 2026 года.\n• 23:55 Киев – взрыв. Герань." };
+  for (const candidate of [
+    { datetime: "2026-09-23T04:05:05Z", text: "Хроника ударов 23 сентября 2026 – 24 сентября 2026 года.\n• 00:05 Киев – взрыв. Герань." },
+    { datetime: "2026-09-23T04:05:05Z", text: "Видео\n0:06 - HMMWV\n0:15 - НРТК" },
+    { datetime: "2026-09-24T04:05:05Z", text: "• 00:05 Киев – взрыв. Герань." },
+  ]) {
+    const result = findAndMergeChronicle([anchor, { channel: anchor.channel, messageId: 86247, ...candidate }],
+      { startDate: "2026-09-22", endDate: "2026-09-23" });
+    assert.deepEqual(result.messages.map(m => m.messageId), [86246]);
+  }
+});
+
 test("gives a newly published single chronicle time for an unmarked continuation", () => {
   const title = "Хроника ударов по территории Украины 16 августа 2026 – 17 августа 2026 года.";
   const firstPart = {
@@ -588,6 +614,43 @@ test("keeps legitimate end-date-only and repeated same-day headings", () => {
     ["2026-09-22", "00:15"],
     ["2026-09-22", "07:10"],
   ]);
+});
+
+test("assigns days across all fragments even when headings repeat or midnight has no heading", () => {
+  const options = { startDate: "2026-09-22", endDate: "2026-09-23", startTime: "12:54" };
+  for (const source of [
+    "23 сентября 2026 года.\n• 07:35 Киев – взрыв. Герань.\n• 13:10 Киев – взрыв. Герань.\n23 сентября 2026 года.\n• 23:55 Киев – взрыв. Герань.\n23 сентября 2026 года.\n• 00:05 Киев – взрыв. Герань.",
+    "23 сентября 2026 года.\n• 07:35 Киев – взрыв. Герань.\n• 13:10 Киев – взрыв. Герань.\n• 23:55 Киев – взрыв. Герань.\n• 00:05 Киев – взрыв. Герань.",
+    "22 сентября 2026 года.\n• 07:35 Киев – взрыв. Герань.\n• 13:10 Киев – взрыв. Герань.\n• 23:55 Киев – взрыв. Герань.\n22 сентября 2026 года.\n• 00:05 Киев – взрыв. Герань.",
+  ]) {
+    const chronology = parseGeranChronology(source, options);
+    assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+      ["2026-09-22", "13:10"], ["2026-09-22", "23:55"], ["2026-09-23", "00:05"],
+    ]);
+  }
+});
+
+test("keeps a midnight-spanning time range on its starting day", () => {
+  const chronology = parseGeranChronology(`23 сентября 2026 года.
+• 23:55-00:05 Киев – взрыв. Герань.
+23 сентября 2026 года.
+• 00:15 Киев – взрыв. Герань.`, { startDate: "2026-09-22", endDate: "2026-09-23" });
+  assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+    ["2026-09-22", "23:55-00:05"], ["2026-09-23", "00:15"],
+  ]);
+});
+
+test("does not publish a daily chronicle with multiple midnight rollovers", () => {
+  const result = findAndMergeChronicle([{
+    channel: "geranium_chronicles", messageId: 1, datetime: "2026-09-23T05:00:00Z",
+    text: `Хроника ударов 22 сентября 2026 – 23 сентября 2026 года.
+22 сентября 2026 года.
+• 23:55 Киев – взрыв. Герань.
+• 00:05 Киев – взрыв. Герань.
+• 23:50 Киев – взрыв. Герань.
+• 00:15 Киев – взрыв. Герань.`,
+  }], { startDate: "2026-09-22", endDate: "2026-09-23" });
+  assert.equal(result, null);
 });
 
 test("preserves events with the clock typos in the September 22 source", () => {

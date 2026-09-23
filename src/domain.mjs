@@ -383,8 +383,10 @@ function textMentionsDate(text, value) {
 }
 
 function looksLikeTimedChronicle(text) {
-  const timedLines = text.match(/(?:^|\n)\s*[•·▪]?\s*\d{1,2}\s*[:.]\s*\d{2}/gu) ?? [];
-  return timedLines.length > 0;
+  return text.split(/\r?\n/u).some((line) => {
+    const match = TIME_EXPRESSION.exec(line.trim());
+    return match && splitChronicleEventBody(match[2]);
+  });
 }
 
 function chroniclePartLooksIncomplete(text) {
@@ -409,23 +411,26 @@ function chroniclePartLooksIncomplete(text) {
 function messagesAreAdjacent(previous, current) {
   const previousId = Number(previous?.messageId ?? previous?.id);
   const currentId = Number(current?.messageId ?? current?.id);
-  if (Number.isFinite(previousId) && Number.isFinite(currentId)) {
-    return currentId > previousId && currentId - previousId <= 2;
-  }
+  const haveIds = Number.isFinite(previousId) && Number.isFinite(currentId);
+  if (haveIds && currentId <= previousId) return false;
   const previousDate = messageDate(previous);
   const currentDate = messageDate(current);
-  return Boolean(
-    previousDate &&
-      currentDate &&
-      currentDate >= previousDate &&
-      currentDate.getTime() - previousDate.getTime() <= 30 * 60 * 1000
-  );
+  // Media albums occupy several IDs but are absent from the text history.
+  // Publication time is the reliable proximity check when it is available.
+  if (previousDate && currentDate) {
+    // Preserve nearby-ID morning additions (e.g. the September 22 update
+    // arrived 33 minutes later), while rejecting distant/day-later posts.
+    const maxGapMinutes = haveIds && currentId - previousId <= 2 ? 60 : 30;
+    return currentDate >= previousDate
+      && currentDate.getTime() - previousDate.getTime() <= maxGapMinutes * 60 * 1000;
+  }
+  return haveIds && currentId - previousId <= 2;
 }
 
 /** Find the requested daily chronicle and glue its adjacent Telegram parts. */
 export function findAndMergeChronicle(
   messages,
-  { startDate, endDate, now, continuationGraceMs = 0 } = {},
+  { startDate, endDate, now, windowEnd, continuationGraceMs = 0 } = {},
 ) {
   const sorted = (Array.isArray(messages) ? messages : [])
     .filter((message) => {
@@ -450,10 +455,7 @@ export function findAndMergeChronicle(
     const candidate = sorted[index];
     if (!messagesAreAdjacent(previous, candidate)) break;
     const text = messageText(candidate);
-    const continuation =
-      looksLikeTimedChronicle(text) ||
-      (endDate && textMentionsDate(text, endDate) && /хронолог|\d{1,2}\s*[:.]\s*\d{2}/iu.test(text));
-    if (!continuation) break;
+    if (/хроник\p{L}*\s+ударов/iu.test(text) || !looksLikeTimedChronicle(text)) break;
     selected.push(candidate);
   }
 
@@ -471,8 +473,23 @@ export function findAndMergeChronicle(
     }
   }
 
+  const text = selected.map(messageText).filter(Boolean).join("\n");
+  const records = buildChronicleRecords(text, startDate, endDate);
+  // A daily chronology can cross midnight once. Do not publish unresolved
+  // dates or a mislabeled daytime-only part that extends beyond this cycle.
+  if (midnightRollovers(records).length > 1) return null;
+  const boundary = toDate(windowEnd);
+  if (boundary) {
+    const limit = localParts(boundary);
+    const limitMinute = minuteOfClock(limit.time);
+    if (records.some((record) => record.date > limit.date || (
+      record.date === limit.date
+      && record.times.some((time) => minuteOfClock(time) > limitMinute)
+    ))) return null;
+  }
+
   return {
-    text: selected.map(messageText).filter(Boolean).join("\n"),
+    text,
     sourceUrls: unique(selected.map(sourceUrlFor)),
     messages: selected,
   };
@@ -523,18 +540,27 @@ function minuteOfClock(value, takeEnd = false) {
   return match ? Number(match[1]) * 60 + Number(match[2]) : null;
 }
 
+function midnightRollovers(records) {
+  const indices = [];
+  for (let index = 1; index < records.length; index += 1) {
+    // Compare starting clocks: a range such as 23:55-00:05 belongs to the
+    // preceding day, even though its ending clock is already past midnight.
+    const previous = minuteOfClock(records[index - 1].times[0]);
+    const current = minuteOfClock(records[index].times[0]);
+    if (previous >= 12 * 60 && current < 12 * 60 && previous - current > 6 * 60) {
+      indices.push(index);
+    }
+  }
+  return indices;
+}
+
 function buildChronicleRecords(text, startDate, endDate) {
   const records = [];
-  const sections = [{ date: startDate ?? null, records: [] }];
   let date = startDate ?? null;
-  let previousMinute = null;
   let current = null;
 
   const flush = () => {
-    if (current) {
-      records.push(current);
-      sections.at(-1).records.push(current);
-    }
+    if (current) records.push(current);
     current = null;
   };
 
@@ -545,25 +571,12 @@ function buildChronicleRecords(text, startDate, endDate) {
     if (headingDate) {
       flush();
       date = headingDate;
-      sections.push({ date: headingDate, records: [] });
-      previousMinute = null;
       continue;
     }
     const match = TIME_EXPRESSION.exec(line);
     if (match) {
       flush();
       const times = splitTimeExpression(match[1]);
-      const minute = minuteOfClock(times[0]);
-      if (
-        date === startDate &&
-        endDate &&
-        previousMinute != null &&
-        minute != null &&
-        previousMinute - minute > 6 * 60
-      ) {
-        date = endDate;
-      }
-      previousMinute = minute;
       current = { date: date ?? startDate ?? null, times, body: match[2], raw: line };
       continue;
     }
@@ -574,18 +587,16 @@ function buildChronicleRecords(text, startDate, endDate) {
   }
   flush();
 
-  // A source may accidentally label both days with the end date. Repair only
-  // the first populated section, with a second same-date section and a clear
-  // evening-to-morning rollover as evidence; keep genuine end-date-only posts.
-  const [firstSection, secondSection] = sections.filter((section) => section.records.length > 0);
-  if (
-    startDate && endDate && startDate < endDate
-    && firstSection?.date === endDate && secondSection?.date === endDate
-  ) {
-    const lastMinute = minuteOfClock(firstSection.records.at(-1).times.at(-1), true);
-    const nextMinute = minuteOfClock(secondSection.records[0].times[0]);
-    if (lastMinute >= 18 * 60 && nextMinute < 12 * 60 && lastMinute - nextMinute > 6 * 60) {
-      for (const record of firstSection.records) record.date = startDate;
+  // Infer the day boundary from the complete clock sequence, across all
+  // fragments and headings. A repeated/incorrect heading must not reset it.
+  // With no clear rollover, retain explicit dates (including end-date-only posts).
+  const rollovers = midnightRollovers(records);
+  if (startDate && endDate && startDate < endDate && rollovers.length === 1) {
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      if (record.date >= startDate && record.date <= endDate) {
+        record.date = index < rollovers[0] ? startDate : endDate;
+      }
     }
   }
   return records;

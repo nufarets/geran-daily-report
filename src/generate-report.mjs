@@ -185,11 +185,12 @@ export async function generateDailyReport({
     startDate: previousDate,
     endDate: reportDate,
     now: runtimeNow,
+    windowEnd: cycleSearchTo,
     continuationGraceMs: 5 * 60 * 1000,
   });
 
   if (!chronicle) {
-    console.log(`Итоговая хроника ${previousDate}–${reportDate} ещё не опубликована.`);
+    console.log(`Хроника ${previousDate}–${reportDate} ещё не готова: отсутствует, неполна или содержит несогласованные даты.`);
     return { status: "waiting-for-chronicle", reportDate };
   }
 

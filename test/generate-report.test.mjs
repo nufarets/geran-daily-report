@@ -99,6 +99,10 @@ test("rebuilds September 22 from archived sources with UAV-only totals and the c
   }
   assert.match(result.markdown, /18:33/u);
   assert.match(result.markdown, /20:50-20:55/u);
+  assert.match(result.markdown, /07:10/u);
+  assert.match(result.markdown, /07:31/u);
+  assert.equal(result.model.chronology.events.length, 49);
+  assert.equal(result.model.sourceUrls.filter(url => url.includes("geranium_chronicles")).length, 4);
   assert.doesNotMatch(result.markdown, /07:35|08:00|08:30|08:57|10:38|12:05/u);
   assert.match(result.markdown, /Сбито\/локационно потеряно 177/u);
   assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
@@ -125,6 +129,48 @@ test("rejects invalid or future report dates before touching sources or paths", 
     reportsDirectory,
   }), /future/u);
   assert.equal(fetchCalls, 0);
+});
+
+test("rebuilds September 23 with both chronicle parts, correct dates, and unchanged PPO counts", async (t) => {
+  const messages = JSON.parse(await readFile(new URL("./fixtures/2026-09-23.json", import.meta.url), "utf8"));
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const result = await generateDailyReport({
+    reportDate: "2026-09-23", now: new Date("2026-09-23T05:10:00Z"), reportsDirectory,
+    fetchHistory: async channel => messages.filter(message => message.channel === channel),
+  });
+  assert.equal(result.status, "published");
+  assert.equal(result.model.firstDetection.timeLabel, "12:54");
+  assert.equal(result.model.ppo.launched, 161);
+  assert.equal(result.model.ppo.neutralized, 119);
+  assert.deepEqual(result.model.sourceUrls.filter(url => url.includes("geranium_chronicles")), [
+    "https://t.me/geranium_chronicles/86246", "https://t.me/geranium_chronicles/86249",
+    "https://t.me/geranium_chronicles/86250", "https://t.me/geranium_chronicles/86251",
+  ]);
+  assert.equal(result.model.chronology.events[0].timeLabel, "13:10-13:15");
+  for (const event of result.model.chronology.events) {
+    assert.equal(event.date, event.timeLabel < "12:54" ? "2026-09-23" : "2026-09-22");
+  }
+  assert.doesNotMatch(result.markdown, /07:31|07:35|07:42|12:15|12:40/u);
+  assert.match(result.markdown, /00:05/u);
+  assert.match(result.markdown, /01:22-01:50/u);
+  assert.match(result.markdown, /06:47/u);
+  assert.match(result.markdown, /07:05/u);
+  assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
+});
+
+test("waits without writing an incorrectly dated partial chronicle, including historical reruns", async (t) => {
+  const messages = JSON.parse(await readFile(new URL("./fixtures/2026-09-23.json", import.meta.url), "utf8"));
+  const partial = messages.filter(message => message.channel !== "geranium_chronicles" || message.messageId === 86246);
+  for (const now of ["2026-09-23T05:10:00Z", "2026-09-24T05:10:00Z"]) {
+    const reportsDirectory = await temporaryReportsDirectory(t);
+    const result = await generateDailyReport({
+      reportDate: "2026-09-23", now: new Date(now), reportsDirectory,
+      fetchHistory: async channel => partial.filter(message => message.channel === channel),
+    });
+    assert.equal(result.status, "waiting-for-chronicle");
+    await assert.rejects(access(path.join(reportsDirectory, "2026-09-23.md")), { code: "ENOENT" });
+    await assert.rejects(access(path.join(reportsDirectory, "latest.md")), { code: "ENOENT" });
+  }
 });
 
 test("historical backfill finds a late chronicle but caps launch evidence at the next 12:20 boundary", async (t) => {
