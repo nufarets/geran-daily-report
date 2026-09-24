@@ -125,6 +125,43 @@ test("uses an emoji strike clause alongside a separate reconnaissance alert", ()
   assert.equal(result.regionLabel, "Харьковская область");
 });
 
+test("recognizes the reactive UAV group regardless of scooter, motorcycle, or absent emoji", () => {
+  for (const prefix of ["🛵 ", "🏍 ", "🏍️ ", ""]) {
+    const result = findFirstStrikeUavMessage([
+      { channel: "kpszsu", messageId: 79677, datetime: "2026-09-23T09:15:06Z", text: "🏍 Реактивні БпЛА на Київ." },
+      { channel: "kpszsu", messageId: 79679, datetime: "2026-09-23T10:05:14Z", text: `${prefix}Група реактивних БпЛА із Дніпропетровщини курсом на Полтавщину.` },
+      { channel: "kpszsu", messageId: 79693, datetime: "2026-09-23T12:26:11Z", text: "🛵 Дніпропетровщина: група БпЛА курсом на Павлоград." },
+    ], { windowStart: "2026-09-23T09:20:00Z", windowEnd: "2026-09-24T05:10:00Z" });
+    assert.equal(result.messageId, 79679, prefix);
+    assert.equal(result.timeLabel, "13:05");
+  }
+});
+
+test("recognizes motorcycle UAV alerts without treating reconnaissance or an isolated reactive UAV as a wave", () => {
+  const result = findFirstStrikeUavMessage([
+    { channel: "kpszsu", messageId: 1, datetime: "2026-09-23T09:25:00Z", text: "🏍 Розвідувальний БпЛА на Сумщині." },
+    { channel: "kpszsu", messageId: 2, datetime: "2026-09-23T09:30:00Z", text: "🏍️ Реактивний БпЛА курсом на Київ." },
+    { channel: "kpszsu", messageId: 3, datetime: "2026-09-23T10:00:00Z", text: "🏍 Київщина: БпЛА курсом на Васильків/Фастів." },
+  ], { windowStart: "2026-09-23T09:20:00Z", windowEnd: "2026-09-24T05:10:00Z" });
+  assert.equal(result.messageId, 3);
+  assert.equal(result.timeLabel, "13:00");
+});
+
+test("normalizes the declined place names in the September 24 report", () => {
+  const chronology = parseGeranChronology(`24 сентября 2026 года.
+• 00:45 Окрестности Черновцов – взрыв. Герань.
+• 04:20 Окрестности Бучи Киевской области – взрывы. Герани.
+• 06:05 Окрестности Шепетовки Хмельницкой области – взрыв. Герань.
+• 07:05 Окрестности Вознесенска Николаевской области – взрыв. Герань.
+• 07:10 Буча – взрыв. Герань.`, { startDate: "2026-09-23", endDate: "2026-09-24" });
+  assert.deepEqual(chronology.regions, [
+    { name: "Черновицкая область", locations: [{ name: "Черновцы", times: ["00:45"] }] },
+    { name: "Киевская область", locations: [{ name: "Буча", times: ["04:20", "07:10"] }] },
+    { name: "Хмельницкая область", locations: [{ name: "Шепетовка", times: ["06:05"] }] },
+    { name: "Николаевская область", locations: [{ name: "Вознесенск", times: ["07:05"] }] },
+  ]);
+});
+
 test("finds and joins a split daily chronicle", () => {
   const messages = [
     {

@@ -173,6 +173,32 @@ test("waits without writing an incorrectly dated partial chronicle, including hi
   }
 });
 
+test("rebuilds September 24 with the early reactive-UAV alert and normalized cities", async (t) => {
+  const messages = JSON.parse(await readFile(new URL("./fixtures/2026-09-24.json", import.meta.url), "utf8"));
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const result = await generateDailyReport({
+    reportDate: "2026-09-24", now: new Date("2026-09-24T05:10:00Z"), reportsDirectory,
+    fetchHistory: async channel => messages.filter(message => message.channel === channel),
+  });
+  assert.equal(result.status, "published");
+  assert.equal(result.model.firstDetection.messageId, 79679);
+  assert.equal(result.model.firstDetection.timeLabel, "13:05");
+  assert.equal(result.model.ppo.launched, 282);
+  assert.equal(result.model.ppo.neutralized, 219);
+  // Preserve the source interval that overlaps the cutoff, and all later events.
+  assert.equal(result.model.chronology.events[0].timeLabel, "11:50-14:00");
+  assert.match(result.markdown, /14:07 - Гончаровское/u);
+  assert.match(result.markdown, /14:07 - Благовещенское/u);
+  assert.match(result.markdown, /14:15 - Бровары/u);
+  assert.match(result.markdown, /15:15 - Ворзель/u);
+  assert.match(result.markdown, /00:45 - Черновцы/u);
+  assert.match(result.markdown, /04:20 - Буча/u);
+  assert.match(result.markdown, /06:05 - Шепетовка/u);
+  assert.match(result.markdown, /07:05 - Вознесенск/u);
+  assert.doesNotMatch(result.markdown, /Неопределённая область|Черновцов|Шепетовки|Вознесенска/u);
+  assert.equal(result.model.chronology.events.length, 30);
+});
+
 test("historical backfill finds a late chronicle but caps launch evidence at the next 12:20 boundary", async (t) => {
   const reportsDirectory = await temporaryReportsDirectory(t);
   const lateChronicle = [message(
