@@ -677,7 +677,7 @@ test("keeps a midnight-spanning time range on its starting day", () => {
   ]);
 });
 
-test("does not publish a daily chronicle with multiple midnight rollovers", () => {
+test("keeps a daily chronicle with multiple midnight rollovers for date resolution", () => {
   const result = findAndMergeChronicle([{
     channel: "geranium_chronicles", messageId: 1, datetime: "2026-09-23T05:00:00Z",
     text: `Хроника ударов 22 сентября 2026 – 23 сентября 2026 года.
@@ -687,7 +687,89 @@ test("does not publish a daily chronicle with multiple midnight rollovers", () =
 • 23:50 Киев – взрыв. Герань.
 • 00:15 Киев – взрыв. Герань.`,
   }], { startDate: "2026-09-22", endDate: "2026-09-23" });
-  assert.equal(result, null);
+  assert.ok(result);
+});
+
+const septemberDateWindow = {
+  startDate: "2026-09-22", endDate: "2026-09-23", startTime: "12:54",
+  windowStart: "2026-09-22T09:20:00Z", windowEnd: "2026-09-23T05:10:00Z",
+};
+
+test("recovers a mislabeled daytime section without assuming its morning belongs to today", () => {
+  const chronology = parseGeranChronology(`23 сентября 2026 года.
+07:35 Киев – взрыв. Герань.
+12:40 Киев – взрыв. Герань.
+14:07 Киев – взрыв. Герань.
+23:50 Киев – взрыв. Герань.`, septemberDateWindow);
+  assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+    ["2026-09-22", "14:07"], ["2026-09-22", "23:50"],
+  ]);
+  assert.deepEqual(chronology.uncertainEvents.map(event => event.timeLabel), ["07:35"]);
+  assert.equal(chronology.uncertainEvents[0].date, null);
+  assert.equal(chronology.uncertainEvents[0].sourceDate, "2026-09-23");
+  assert.equal(chronology.notes.length, 1);
+});
+
+test("keeps explicitly dated evening additions after night events on their correct day", () => {
+  for (const prefix of ["", "22 сентября 2026 года.\n23:50 Киев – взрыв. Герань.\n"]) {
+    const chronology = parseGeranChronology(`${prefix}23 сентября 2026 года.
+00:05 Киев – взрыв. Герань.
+22 сентября 2026 года.
+23:55 Киев – взрыв. Герань.
+23 сентября 2026 года.
+00:15 Киев – взрыв. Герань.`, septemberDateWindow);
+    assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+      ...(prefix ? [["2026-09-22", "23:50"]] : []),
+      ["2026-09-22", "23:55"], ["2026-09-23", "00:05"], ["2026-09-23", "00:15"],
+    ]);
+    assert.deepEqual(chronology.uncertainEvents, []);
+  }
+});
+
+test("resolves multiple rollovers with a repeated heading using the collection window", () => {
+  for (const heading of ["", "22 сентября 2026 года.\n", "23 сентября 2026 года.\n"]) {
+    const chronology = parseGeranChronology(`${heading}23:50 Киев – взрыв. Герань.
+00:05 Киев – взрыв. Герань.
+23:55 Киев – взрыв. Герань.
+00:15 Киев – взрыв. Герань.`, septemberDateWindow);
+    assert.deepEqual(chronology.events.map(({ date, timeLabel }) => [date, timeLabel]), [
+      ["2026-09-22", "23:50"], ["2026-09-22", "23:55"],
+      ["2026-09-23", "00:05"], ["2026-09-23", "00:15"],
+    ]);
+    assert.deepEqual(chronology.uncertainEvents, []);
+  }
+});
+
+test("retains a future clock separately without altering a valid event or inventing a date", () => {
+  const chronology = parseGeranChronology(`23 сентября 2026 года.
+07:00, 09:00 Киев – взрывы. Герани.`, septemberDateWindow);
+  assert.deepEqual(chronology.events.map(event => [event.date, event.timeLabel]), [["2026-09-23", "07:00"]]);
+  assert.deepEqual(chronology.uncertainEvents.map(event => [event.date, event.timeLabel]), [[null, "09:00"]]);
+  const markdown = renderMarkdownReport({ ...septemberDateWindow, chronology });
+  const [main, uncertain] = markdown.split("События с неуточнённой датой");
+  assert.match(main, /07:00 - Киев/u);
+  assert.doesNotMatch(main, /09:00/u);
+  assert.match(uncertain, /09:00 - Киев.*дата в источнике: 23\.09\.2026/u);
+});
+
+test("retains out-of-period dates separately and does not mix non-Geran events into the report", () => {
+  const chronology = parseGeranChronology(`25 сентября 2026 года.
+14:00 Киев – взрыв. Герань.
+14:15 Киев – взрыв. Искандер.`, septemberDateWindow);
+  assert.equal(chronology.events.length, 0);
+  assert.equal(chronology.uncertainEvents.length, 1);
+  assert.equal(chronology.uncertainEvents[0].sourceDate, "2026-09-25");
+  assert.equal(chronology.uncertainEvents[0].timeLabel, "14:00");
+});
+
+test("preserves source time ranges across the start cutoff and midnight while recovering dates", () => {
+  const chronology = parseGeranChronology(`23 сентября 2026 года.
+11:50-14:00 Киев – взрывы. Герани.
+23:55-00:05 Киев – взрывы. Герани.`, septemberDateWindow);
+  assert.deepEqual(chronology.events.map(event => [event.date, event.timeLabel]), [
+    ["2026-09-22", "11:50-14:00"], ["2026-09-22", "23:55-00:05"],
+  ]);
+  assert.deepEqual(chronology.uncertainEvents, []);
 });
 
 test("preserves events with the clock typos in the September 22 source", () => {

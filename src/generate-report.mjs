@@ -185,12 +185,11 @@ export async function generateDailyReport({
     startDate: previousDate,
     endDate: reportDate,
     now: runtimeNow,
-    windowEnd: cycleSearchTo,
     continuationGraceMs: 5 * 60 * 1000,
   });
 
   if (!chronicle) {
-    console.log(`Хроника ${previousDate}–${reportDate} ещё не готова: отсутствует, неполна или содержит несогласованные даты.`);
+    console.log(`Хроника ${previousDate}–${reportDate} ещё не готова: отсутствует или неполна.`);
     return { status: "waiting-for-chronicle", reportDate };
   }
 
@@ -198,6 +197,8 @@ export async function generateDailyReport({
     startDate: previousDate,
     endDate: reportDate,
     startTime: firstDetection?.timeLabel || "12:20",
+    windowStart: searchFrom,
+    windowEnd: cycleSearchTo,
   });
   const officialPpo = parseOfficialPpo(officialMessages, { reportDate });
 

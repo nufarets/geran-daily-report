@@ -438,7 +438,7 @@ function messagesAreAdjacent(previous, current) {
 /** Find the requested daily chronicle and glue its adjacent Telegram parts. */
 export function findAndMergeChronicle(
   messages,
-  { startDate, endDate, now, windowEnd, continuationGraceMs = 0 } = {},
+  { startDate, endDate, now, continuationGraceMs = 0 } = {},
 ) {
   const sorted = (Array.isArray(messages) ? messages : [])
     .filter((message) => {
@@ -482,20 +482,6 @@ export function findAndMergeChronicle(
   }
 
   const text = selected.map(messageText).filter(Boolean).join("\n");
-  const records = buildChronicleRecords(text, startDate, endDate);
-  // A daily chronology can cross midnight once. Do not publish unresolved
-  // dates or a mislabeled daytime-only part that extends beyond this cycle.
-  if (midnightRollovers(records).length > 1) return null;
-  const boundary = toDate(windowEnd);
-  if (boundary) {
-    const limit = localParts(boundary);
-    const limitMinute = minuteOfClock(limit.time);
-    if (records.some((record) => record.date > limit.date || (
-      record.date === limit.date
-      && record.times.some((time) => minuteOfClock(time) > limitMinute)
-    ))) return null;
-  }
-
   return {
     text,
     sourceUrls: unique(selected.map(sourceUrlFor)),
@@ -565,6 +551,8 @@ function midnightRollovers(records) {
 function buildChronicleRecords(text, startDate, endDate) {
   const records = [];
   let date = startDate ?? null;
+  let sourceDate = null;
+  let section = 0;
   let current = null;
 
   const flush = () => {
@@ -579,13 +567,15 @@ function buildChronicleRecords(text, startDate, endDate) {
     if (headingDate) {
       flush();
       date = headingDate;
+      sourceDate = headingDate;
+      section += 1;
       continue;
     }
     const match = TIME_EXPRESSION.exec(line);
     if (match) {
       flush();
       const times = splitTimeExpression(match[1]);
-      current = { date: date ?? startDate ?? null, times, body: match[2], raw: line };
+      current = { date: date ?? startDate ?? null, sourceDate, section, times, body: match[2], raw: line };
       continue;
     }
     if (current && !/^(?:хронолог|результат|на фото|вчера|сегодня)/iu.test(line)) {
@@ -599,7 +589,12 @@ function buildChronicleRecords(text, startDate, endDate) {
   // fragments and headings. A repeated/incorrect heading must not reset it.
   // With no clear rollover, retain explicit dates (including end-date-only posts).
   const rollovers = midnightRollovers(records);
-  if (startDate && endDate && startDate < endDate && rollovers.length === 1) {
+  // Explicitly dated additions may go back to yesterday after today's events.
+  // Their position in the post must not overwrite an otherwise valid date.
+  const datesGoBackwards = records.some((record, index) => index > 0
+    && record.sourceDate && records[index - 1].sourceDate
+    && record.sourceDate < records[index - 1].sourceDate);
+  if (startDate && endDate && startDate < endDate && rollovers.length === 1 && !datesGoBackwards) {
     for (let index = 0; index < records.length; index += 1) {
       const record = records[index];
       if (record.date >= startDate && record.date <= endDate) {
@@ -608,6 +603,76 @@ function buildChronicleRecords(text, startDate, endDate) {
     }
   }
   return records;
+}
+
+function clockOverlapsStart(time, cutoff) {
+  const start = minuteOfClock(time);
+  const end = minuteOfClock(time, true);
+  return start != null && end != null && (start >= cutoff || end >= cutoff || end < start);
+}
+
+function resolveChronicleDates(records, { startDate, endDate, windowStart, windowEnd }) {
+  const boundary = toDate(windowEnd);
+  if (!boundary || !startDate || !endDate || startDate >= endDate) return records;
+  const limit = localParts(boundary);
+  const limitMinute = minuteOfClock(limit.time);
+  const beginning = toDate(windowStart);
+  const startMinute = beginning ? minuteOfClock(localParts(beginning).time) : 12 * 60 + 20;
+  const beyondEnd = (date, time) => date > limit.date
+    || (date === limit.date && minuteOfClock(time) > limitMinute);
+  const candidateDates = (time) => [startDate, endDate].filter(date =>
+    !beyondEnd(date, time) && (date !== startDate || clockOverlapsStart(time, startMinute)));
+
+  const sections = new Map();
+  for (const record of records) {
+    if (!sections.has(record.section)) sections.set(record.section, []);
+    sections.get(record.section).push(record);
+  }
+  // A daytime-only part can be headed with today's date by mistake. That
+  // invalidates its morning labels too; do not turn yesterday's early events
+  // into this morning's events just because those clocks fit the window.
+  const suspectSections = new Set();
+  for (const [section, entries] of sections) {
+    if (entries.every(record => record.date === endDate)
+      && midnightRollovers(entries).length === 0
+      && entries.some(record => record.times.some(time => beyondEnd(record.date, time)
+        && candidateDates(time).includes(startDate)))) {
+      suspectSections.add(section);
+    }
+  }
+  const sourceDates = new Set(records.map(record => record.sourceDate).filter(Boolean));
+  const unorderedWithoutDates = midnightRollovers(records).length > 1 && sourceDates.size < 2;
+
+  return records.flatMap(record => {
+    const resolved = [];
+    for (const time of record.times) {
+      let date = record.date;
+      let dateIssue = null;
+      let dateRecovered = false;
+      if (date < startDate || date > endDate) {
+        dateIssue = "дата в источнике вне периода отчёта";
+      } else if (suspectSections.has(record.section) && !clockOverlapsStart(time, startMinute)) {
+        dateIssue = "ошибочный заголовок раздела; день события неясен";
+      } else if (unorderedWithoutDates || suspectSections.has(record.section) || beyondEnd(date, time)) {
+        const candidates = candidateDates(time);
+        if (candidates.length === 1) {
+          date = candidates[0];
+          dateRecovered = date !== record.date;
+        } else {
+          dateIssue = "дату нельзя однозначно согласовать с периодом отчёта";
+        }
+      }
+      if (dateIssue) date = null;
+      const existing = resolved.find(item => item.date === date && item.dateIssue === dateIssue);
+      if (existing) {
+        existing.times.push(time);
+        existing.dateRecovered ||= dateRecovered;
+      } else {
+        resolved.push({ ...record, date, times: [time], dateIssue, dateRecovered });
+      }
+    }
+    return resolved;
+  });
 }
 
 function geranMentioned(text) {
@@ -717,8 +782,7 @@ function isRecordInsideWindow(record, { startDate, endDate, startTime }) {
   if (endDate && record.date && record.date > endDate) return false;
   if (startDate && record.date === startDate && startTime) {
     const cutoff = minuteOfClock(normalizeClock(startTime));
-    const eventEnd = Math.max(...record.times.map((time) => minuteOfClock(time, true) ?? -1));
-    if (cutoff != null && eventEnd < cutoff) return false;
+    if (cutoff != null && !record.times.some(time => clockOverlapsStart(time, cutoff))) return false;
   }
   return true;
 }
@@ -749,29 +813,43 @@ function splitChronicleEventBody(body) {
  */
 export function parseGeranChronology(
   text,
-  { startDate, endDate, startTime = "00:00" } = {},
+  { startDate, endDate, startTime = "00:00", windowStart, windowEnd } = {},
 ) {
-  const records = buildChronicleRecords(text, startDate, endDate);
+  const records = resolveChronicleDates(buildChronicleRecords(text, startDate, endDate), {
+    startDate, endDate, windowStart, windowEnd,
+  });
   const events = [];
+  const uncertainEvents = [];
+  let recoveredDates = false;
 
   for (const record of records) {
     const separator = splitChronicleEventBody(record.body);
     if (!separator) continue;
     const [subject, details] = separator;
-    if (!geranMentioned(details) || !isRecordInsideWindow(record, { startDate, endDate, startTime })) {
+    if (!geranMentioned(details) || (!record.dateIssue && !isRecordInsideWindow(record, { startDate, endDate, startTime }))) {
       continue;
     }
+    recoveredDates ||= record.dateRecovered;
     for (const { region, location } of locationsForSubject(subject.trim())) {
-      events.push({
+      const event = {
         date: record.date,
         region,
         location,
         times: [...record.times],
         timeLabel: record.times.join(", "),
         text: record.raw,
-      });
+      };
+      if (record.dateIssue) {
+        uncertainEvents.push({ ...event, sourceDate: record.sourceDate, reason: record.dateIssue });
+      } else {
+        events.push(event);
+      }
     }
   }
+
+  // Sort additions into their recovered day without changing the source clocks.
+  events.sort((left, right) => String(left.date).localeCompare(String(right.date))
+    || minuteOfClock(left.times[0]) - minuteOfClock(right.times[0]));
 
   const regions = [];
   const regionIndex = new Map();
@@ -790,7 +868,9 @@ export function parseGeranChronology(
     location.times = unique([...location.times, ...event.times]);
   }
 
-  return { events, regions };
+  return { events, regions, uncertainEvents, notes: recoveredDates
+    ? ["Некоторые даты в источнике исправлены по периоду отчёта; время событий сохранено без изменений."]
+    : [] };
 }
 
 function extractNumber(text, patterns) {
@@ -1036,6 +1116,16 @@ export function renderMarkdownReport(model = {}) {
     for (const location of region.locations ?? []) {
       const times = Array.isArray(location.times) ? location.times.join(", ") : location.timeLabel;
       if (times && location.name) lines.push(`${times} - ${location.name}  `);
+    }
+  }
+
+  for (const note of chronology.notes ?? []) lines.push("", `Примечание: ${note}`);
+  if (chronology.uncertainEvents?.length) {
+    lines.push("", "События с неуточнённой датой", "",
+      "В источнике есть противоречия в датах. Эти записи сохранены отдельно и не включены в основную хронологию; время указано как в источнике.", "");
+    for (const event of chronology.uncertainEvents) {
+      const sourceDate = event.sourceDate ? displayDate(event.sourceDate) : "не указана";
+      lines.push(`- ${event.timeLabel} - ${event.location} (${event.region}); дата в источнике: ${sourceDate}; ${event.reason}.`);
     }
   }
 

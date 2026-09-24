@@ -158,7 +158,7 @@ test("rebuilds September 23 with both chronicle parts, correct dates, and unchan
   assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
 });
 
-test("waits without writing an incorrectly dated partial chronicle, including historical reruns", async (t) => {
+test("publishes an incorrectly dated daytime chronicle, including historical reruns", async (t) => {
   const messages = JSON.parse(await readFile(new URL("./fixtures/2026-09-23.json", import.meta.url), "utf8"));
   const partial = messages.filter(message => message.channel !== "geranium_chronicles" || message.messageId === 86246);
   for (const now of ["2026-09-23T05:10:00Z", "2026-09-24T05:10:00Z"]) {
@@ -167,10 +167,58 @@ test("waits without writing an incorrectly dated partial chronicle, including hi
       reportDate: "2026-09-23", now: new Date(now), reportsDirectory,
       fetchHistory: async channel => partial.filter(message => message.channel === channel),
     });
-    assert.equal(result.status, "waiting-for-chronicle");
-    await assert.rejects(access(path.join(reportsDirectory, "2026-09-23.md")), { code: "ENOENT" });
-    await assert.rejects(access(path.join(reportsDirectory, "latest.md")), { code: "ENOENT" });
+    assert.equal(result.status, "published");
+    assert.equal(result.model.chronology.events[0].timeLabel, "13:10-13:15");
+    assert.ok(result.model.chronology.events.every(event => event.date === "2026-09-22"));
+    assert.ok(result.model.chronology.uncertainEvents.some(event => event.timeLabel === "07:35"));
+    assert.equal(result.model.ppo.launched, 161);
+    assert.equal(result.model.ppo.neutralized, 119);
+    assert.match(result.markdown, /События с неуточнённой датой/u);
+    assert.equal(await readFile(path.join(reportsDirectory, "2026-09-23.md"), "utf8"), result.markdown);
+    assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
   }
+});
+
+test("publishes PPO and all uncertain chronology entries even when no event date can be resolved", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const { fetchHistory } = injectedFetch({
+    geranium_chronicles: [message("geranium_chronicles", 80122, "2026-08-18T05:00:00Z",
+      "Хроника ударов 17 августа 2026 – 18 августа 2026 года.\n18 августа 2026 года.\n09:00 Киев – взрыв. Герань.")],
+    kpszsu: [firstDetectionMessage(), officialPpoMessage()],
+  });
+  const result = await generateDailyReport({ reportDate: REPORT_DATE, now: RUN_AT, fetchHistory, reportsDirectory });
+  assert.equal(result.status, "published");
+  assert.equal(result.model.chronology.events.length, 0);
+  assert.equal(result.model.chronology.uncertainEvents.length, 1);
+  assert.match(result.markdown, /09:00 - Киев/u);
+  assert.match(result.markdown, /Запущено 147 БПЛА/u);
+  assert.match(result.markdown, /Сбито\/локационно потеряно 111/u);
+  assert.match(result.markdown, /https:\/\/t\.me\/geranium_chronicles\/80122/u);
+  assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
+});
+
+test("publishes a chronicle with late additions and multiple midnight rollovers", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const { fetchHistory } = injectedFetch({
+    geranium_chronicles: [message("geranium_chronicles", 80122, "2026-08-18T05:00:00Z",
+      `Хроника ударов 17 августа 2026 – 18 августа 2026 года.
+17 августа 2026 года.
+23:50 Киев – взрыв. Герань.
+18 августа 2026 года.
+00:05 Киев – взрыв. Герань.
+17 августа 2026 года.
+23:55 Киев – взрыв. Герань.
+18 августа 2026 года.
+00:15 Киев – взрыв. Герань.`)],
+    kpszsu: [firstDetectionMessage(), officialPpoMessage()],
+  });
+  const result = await generateDailyReport({ reportDate: REPORT_DATE, now: RUN_AT, fetchHistory, reportsDirectory });
+  assert.equal(result.status, "published");
+  assert.deepEqual(result.model.chronology.events.map(event => [event.date, event.timeLabel]), [
+    ["2026-08-17", "23:50"], ["2026-08-17", "23:55"],
+    ["2026-08-18", "00:05"], ["2026-08-18", "00:15"],
+  ]);
+  assert.equal(await readFile(path.join(reportsDirectory, `${REPORT_DATE}.md`), "utf8"), result.markdown);
 });
 
 test("rebuilds September 24 with the early reactive-UAV alert and normalized cities", async (t) => {
