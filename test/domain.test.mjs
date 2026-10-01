@@ -538,16 +538,16 @@ test("keeps Ukrainian Bryansk and the Donetsk region while treating Crimea as Gv
   const result = parseOfficialPpo([{ text: `Противник атакував 107 ударними БпЛА типу Shahed
 із напрямків: Орел, Міллерово, Брянськ, Шаталово - рф, ТОТ Донецької обл. та ТОТ АР Крим – Гвардійське.
 Збито/подавлено 87 ворожих БпЛА.` }]);
-  assert.deepEqual(result.launchPlaces, ["Орел", "Ростов", "Брянск", "Смоленск", "Донецкая область", "Гвардейское"]);
+  assert.deepEqual(result.launchPlaces, ["Орел", "Ростов", "Брянск", "Смоленск", "Донецк", "Гвардейское"]);
   assert.equal(result.launched, 107);
   assert.equal(result.neutralized, 87);
   assert.equal(normalizeLaunchPlace("Брянськ"), "Брянск");
 });
 
-test("preserves a region-only launch direction without turning it into the city of Donetsk", () => {
+test("uses the requested Donetsk label for region-only launch directions", () => {
   for (const region of ["ТОТ Донецької обл.", "Донецька область", "Донецькій області", "Донецкая область", "Донецкой области"]) {
     const result = parseOfficialPpo([{ text: `Противник атакував 107 ударними БпЛА із напрямків: ${region}, Брянськ.` }]);
-    assert.deepEqual(result.launchPlaces, ["Донецкая область", "Брянск"], region);
+    assert.deepEqual(result.launchPlaces, ["Донецк", "Брянск"], region);
   }
   assert.equal(normalizeLaunchPlace("Донецьк"), "Донецк");
 });

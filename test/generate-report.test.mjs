@@ -116,13 +116,13 @@ test("rebuilds October 1 with complete launch directions and unchanged counts an
     fetchHistory: async channel => messages.filter(message => message.channel === channel),
   });
   assert.equal(result.status, "published");
-  assert.deepEqual(result.model.launchPlaces, ["Орел", "Ростов", "Брянск", "Смоленск", "Донецкая область", "Гвардейское"]);
+  assert.deepEqual(result.model.launchPlaces, ["Орел", "Ростов", "Брянск", "Смоленск", "Донецк", "Гвардейское"]);
   assert.equal(result.model.ppo.launched, 107);
   assert.equal(result.model.ppo.neutralized, 87);
   assert.equal(result.model.firstDetection.timeLabel, "12:21");
   assert.equal(result.model.chronology.events.length, 53);
   assert.equal(result.model.chronology.uncertainEvents.length, 0);
-  assert.match(result.markdown, /Точки пусков по версии поветряных: Орел, Ростов, Брянск, Смоленск, Донецкая область, Гвардейское\n/u);
+  assert.match(result.markdown, /Точки пусков по версии поветряных: Орел, Ростов, Брянск, Смоленск, Донецк, Гвардейское\n/u);
   assert.equal(await readFile(path.join(reportsDirectory, "2026-10-01.md"), "utf8"), result.markdown);
   assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
 });
