@@ -108,6 +108,25 @@ test("rebuilds September 22 from archived sources with UAV-only totals and the c
   assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
 });
 
+test("rebuilds October 1 with complete launch directions and unchanged counts and chronology", async (t) => {
+  const messages = JSON.parse(await readFile(new URL("./fixtures/2026-10-01.json", import.meta.url), "utf8"));
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const result = await generateDailyReport({
+    reportDate: "2026-10-01", now: new Date("2026-10-01T05:10:00Z"), reportsDirectory,
+    fetchHistory: async channel => messages.filter(message => message.channel === channel),
+  });
+  assert.equal(result.status, "published");
+  assert.deepEqual(result.model.launchPlaces, ["Орел", "Ростов", "Брянск", "Смоленск", "Донецкая область", "Гвардейское"]);
+  assert.equal(result.model.ppo.launched, 107);
+  assert.equal(result.model.ppo.neutralized, 87);
+  assert.equal(result.model.firstDetection.timeLabel, "12:21");
+  assert.equal(result.model.chronology.events.length, 53);
+  assert.equal(result.model.chronology.uncertainEvents.length, 0);
+  assert.match(result.markdown, /Точки пусков по версии поветряных: Орел, Ростов, Брянск, Смоленск, Донецкая область, Гвардейское\n/u);
+  assert.equal(await readFile(path.join(reportsDirectory, "2026-10-01.md"), "utf8"), result.markdown);
+  assert.equal(await readFile(path.join(reportsDirectory, "latest.md"), "utf8"), result.markdown);
+});
+
 test("rejects invalid or future report dates before touching sources or paths", async (t) => {
   const reportsDirectory = await temporaryReportsDirectory(t);
   let fetchCalls = 0;

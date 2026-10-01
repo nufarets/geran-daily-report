@@ -181,7 +181,7 @@ const CITY_DEFINITIONS = Object.freeze([
 const LAUNCH_PLACE_DEFINITIONS = Object.freeze([
   ["Курск", /(?<!\p{L})(?:хал[иі]но|курск|курськ)(?!\p{L})/giu],
   ["Ростов", /(?<!\p{L})(?:м[иі]л+ер+(?:о|е)во|ростов)(?!\p{L})/giu],
-  ["Брянск", /(?<!\p{L})(?:навля|набля|навл[ія]|брянск)(?!\p{L})/giu],
+  ["Брянск", /(?<!\p{L})(?:навля|набля|навл[ія]|брянсь?к)(?!\p{L})/giu],
   ["Смоленск", /(?<!\p{L})(?:шаталово|шаталвоо|шатлово|смоленск)(?!\p{L})/giu],
   ["Крым", /(?<!\p{L})(?:кача|кач[иі]|крым|крим)(?!\p{L})/giu],
   ["Орел", /(?<!\p{L})(?:цимбулов[оа]?|ор[её]л)(?!\p{L})/giu],
@@ -189,6 +189,7 @@ const LAUNCH_PLACE_DEFINITIONS = Object.freeze([
   ["Гвардейское", /(?<!\p{L})(?:гвардейское|гвардійське|гвардейск(?:ое)?)(?!\p{L})/giu],
   ["Приморско-Ахтарск", /(?<!\p{L})приморс(?:ко|ько)[-–— ]ахтарс(?:к|ьк)(?:а|у|ом)?(?!\p{L})/giu],
   ["Донецк", /(?<!\p{L})(?:донецк|донецьк)(?!\p{L})/giu],
+  ["Донецкая область", /(?<!\p{L})(?:донецк(?:ая|ой|ую)|донецьк(?:а|ої|ій|у))\s+обл(?:асть|аст[иі])?\.?(?!\p{L})/giu],
   ["Ейск", /(?<!\p{L})(?:ейск|єйськ)(?!\p{L})/giu],
   ["Сеща", /(?<!\p{L})сеща(?!\p{L})/giu],
 ]);
@@ -884,10 +885,20 @@ function extractNumber(text, patterns) {
 function launchMatches(text) {
   const matches = [];
   for (const [canonical, pattern] of LAUNCH_PLACE_DEFINITIONS) {
-    for (const match of text.matchAll(pattern)) matches.push({ canonical, index: match.index });
+    for (const match of text.matchAll(pattern)) {
+      matches.push({ canonical, index: match.index, end: match.index + match[0].length, text: match[0] });
+    }
   }
   matches.sort((left, right) => left.index - right.index);
-  return unique(matches.map((match) => match.canonical));
+  const places = matches.filter((match, index) => {
+    // In "ТОТ АР Крим – Гвардійське", Crimea qualifies the named site.
+    // Keep separately listed Crimea and the existing Кача -> Крым mapping.
+    if (!/^(?:крым|крим)$/iu.test(match.text)) return true;
+    const next = matches[index + 1];
+    return !next || !["Гвардейское", "Чауда"].includes(next.canonical)
+      || !/^\s*[-–—:]\s*$/u.test(text.slice(match.end, next.index));
+  });
+  return unique(places.map((match) => match.canonical));
 }
 
 export function normalizeLaunchPlace(value) {

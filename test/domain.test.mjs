@@ -534,6 +534,39 @@ test("parses official PVO counts, status and normalized launch places", () => {
   ]);
 });
 
+test("keeps Ukrainian Bryansk and the Donetsk region while treating Crimea as Gvardiiske's qualifier", () => {
+  const result = parseOfficialPpo([{ text: `Противник атакував 107 ударними БпЛА типу Shahed
+із напрямків: Орел, Міллерово, Брянськ, Шаталово - рф, ТОТ Донецької обл. та ТОТ АР Крим – Гвардійське.
+Збито/подавлено 87 ворожих БпЛА.` }]);
+  assert.deepEqual(result.launchPlaces, ["Орел", "Ростов", "Брянск", "Смоленск", "Донецкая область", "Гвардейское"]);
+  assert.equal(result.launched, 107);
+  assert.equal(result.neutralized, 87);
+  assert.equal(normalizeLaunchPlace("Брянськ"), "Брянск");
+});
+
+test("preserves a region-only launch direction without turning it into the city of Donetsk", () => {
+  for (const region of ["ТОТ Донецької обл.", "Донецька область", "Донецькій області", "Донецкая область", "Донецкой области"]) {
+    const result = parseOfficialPpo([{ text: `Противник атакував 107 ударними БпЛА із напрямків: ${region}, Брянськ.` }]);
+    assert.deepEqual(result.launchPlaces, ["Донецкая область", "Брянск"], region);
+  }
+  assert.equal(normalizeLaunchPlace("Донецьк"), "Донецк");
+});
+
+test("removes only a Crimea qualifier and retains independently listed Crimea or Kacha", () => {
+  for (const [source, expected] of [
+    ["ТОТ АР Крим – Гвардійське", ["Гвардейское"]],
+    ["ТОТ АР Крим - Чауда, Гвардійське", ["Чауда", "Гвардейское"]],
+    ["Крым: Гвардейское", ["Гвардейское"]],
+    ["ТОТ АР Крим", ["Крым"]],
+    ["Крим, Гвардійське", ["Крым", "Гвардейское"]],
+    ["Кача, ТОТ АР Крим – Гвардійське", ["Крым", "Гвардейское"]],
+    ["Гвардійське, Кача", ["Гвардейское", "Крым"]],
+  ]) {
+    const result = parseOfficialPpo([{ text: `Противник атакував 107 ударними БпЛА із напрямків: ${source}.` }]);
+    assert.deepEqual(result.launchPlaces, expected, source);
+  }
+});
+
 test("returns null when the official PVO summary is not available", () => {
   assert.equal(
     parseOfficialPpo(
