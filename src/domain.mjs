@@ -391,6 +391,22 @@ function textMentionsDate(text, value) {
   return numeric.test(text) || words.test(text) || text.includes(`${day}.${month}.${parts.year}`);
 }
 
+function chronicleTitleMatchesWithExtraDayDigit(text, startDate, endDate) {
+  if (Date.parse(endDate) - Date.parse(startDate) !== 86_400_000) return false;
+
+  const title = text.trim().split(/\r?\n/u, 1)[0];
+  const range = /^хроника\s+ударов(?:\s+по\s+территории\s+украины)?\s+(?<start>\d{1,2}\s+[а-яё]+\s+\d{4})\s*[-–—]\s*(?<day>\d{3})\s*(?<month>[а-яё]+)\s+(?<year>\d{4})(?:\s+года?)?\.?$/iu.exec(title);
+  if (!range || parseRussianDateHeading(`${range.groups.start} года`) !== startDate) return false;
+
+  const { day, month, year } = range.groups;
+  // The correctly dated first half identifies the cycle. Only remove one
+  // digit from the malformed end day if the result matches that cycle's end.
+  return [...day].some((_, index) => {
+    const correctedDay = day.slice(0, index) + day.slice(index + 1);
+    return parseRussianDateHeading(`${correctedDay} ${month} ${year} года`) === endDate;
+  });
+}
+
 function looksLikeTimedChronicle(text) {
   return text.split(/\r?\n/u).some((line) => {
     const match = TIME_EXPRESSION.exec(line.trim());
@@ -436,8 +452,8 @@ function messagesAreAdjacent(previous, current) {
   return haveIds && currentId - previousId <= 2;
 }
 
-/** Find the requested daily chronicle and glue its adjacent Telegram parts. */
-export function findAndMergeChronicle(
+/** Inspect the requested daily chronicle and join adjacent parts when complete. */
+export function inspectChronicle(
   messages,
   { startDate, endDate, now, continuationGraceMs = 0 } = {},
 ) {
@@ -448,7 +464,7 @@ export function findAndMergeChronicle(
     })
     .sort(compareMessages);
 
-  const anchorIndex = sorted.findIndex((message) => {
+  let anchorIndex = sorted.findIndex((message) => {
     const text = messageText(message);
     return (
       /хроник\p{L}*\s+ударов/iu.test(text) &&
@@ -456,7 +472,11 @@ export function findAndMergeChronicle(
       (!endDate || textMentionsDate(text, endDate))
     );
   });
-  if (anchorIndex < 0) return null;
+  if (anchorIndex < 0) {
+    anchorIndex = sorted.findIndex((message) =>
+      chronicleTitleMatchesWithExtraDayDigit(messageText(message), startDate, endDate));
+  }
+  if (anchorIndex < 0) return { chronicle: null, reason: "no-matching-post" };
 
   const selected = [sorted[anchorIndex]];
   for (let index = anchorIndex + 1; index < sorted.length && selected.length < 4; index += 1) {
@@ -468,7 +488,9 @@ export function findAndMergeChronicle(
     selected.push(candidate);
   }
 
-  if (chroniclePartLooksIncomplete(messageText(selected.at(-1)))) return null;
+  if (chroniclePartLooksIncomplete(messageText(selected.at(-1)))) {
+    return { chronicle: null, reason: "incomplete-post" };
+  }
   if (selected.length === 1 && continuationGraceMs > 0) {
     const publishedAt = messageDate(selected[0])?.getTime();
     const checkedAt = now instanceof Date ? now.getTime() : Date.parse(now ?? "");
@@ -478,16 +500,22 @@ export function findAndMergeChronicle(
       && checkedAt >= publishedAt
       && checkedAt - publishedAt < continuationGraceMs
     ) {
-      return null;
+      return { chronicle: null, reason: "continuation-grace-period" };
     }
   }
 
   const text = selected.map(messageText).filter(Boolean).join("\n");
   return {
-    text,
-    sourceUrls: unique(selected.map(sourceUrlFor)),
-    messages: selected,
+    chronicle: {
+      text,
+      sourceUrls: unique(selected.map(sourceUrlFor)),
+      messages: selected,
+    },
   };
+}
+
+export function findAndMergeChronicle(messages, options) {
+  return inspectChronicle(messages, options).chronicle;
 }
 
 function parseRussianDateHeading(line) {

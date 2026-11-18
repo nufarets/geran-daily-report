@@ -372,6 +372,31 @@ test("publishes the 17–18 report to dated/latest files and makes a repeated ru
   assert.equal(calls.length, callCountAfterPublish, "already-published must not fetch Telegram again");
 });
 
+test("publishes the report when the chronicle headline has an extra digit in the last day", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const { fetchHistory } = injectedFetch({
+    geranium_chronicles: [message(
+      "geranium_chronicles",
+      90001,
+      "2026-11-18T05:00:00.000Z",
+      "Хроника ударов по территории Украины 17 ноября 2026 – 178ноября 2026 года\n"
+        + "• 23:50 Одесса – взрыв. Герань.\n"
+        + "• 00:30 Одесса – взрыв. Герань.",
+    )],
+  });
+
+  const result = await generateDailyReport({
+    reportDate: "2026-11-18",
+    now: new Date("2026-11-18T05:10:00.000Z"),
+    fetchHistory,
+    reportsDirectory,
+  });
+
+  assert.equal(result.status, "published");
+  assert.match(result.markdown, /^17\.11\.2026-18\.11\.2026\n/u);
+  assert.equal(await readFile(path.join(reportsDirectory, "2026-11-18.md"), "utf8"), result.markdown);
+});
+
 test("uses confirmed monitoring launch places when the official PVO summary is absent", async (t) => {
   const reportsDirectory = await temporaryReportsDirectory(t);
   const fixtures = {
@@ -523,8 +548,47 @@ test("waits without writing report files while the requested chronicle is missin
     reportsDirectory,
   });
 
-  assert.deepEqual(result, { status: "waiting-for-chronicle", reportDate: REPORT_DATE });
+  assert.deepEqual(result, {
+    status: "waiting-for-chronicle",
+    reportDate: REPORT_DATE,
+    reason: "no-matching-post",
+  });
   assert.deepEqual(calls.map((call) => call.handle), ["geranium_chronicles", "kpszsu"]);
   await assert.rejects(access(path.join(reportsDirectory, "2026-08-18.md")));
+  await assert.rejects(access(path.join(reportsDirectory, "latest.md")));
+});
+
+test("distinguishes an incomplete chronicle from a freshly published first part", async (t) => {
+  const reportsDirectory = await temporaryReportsDirectory(t);
+  const [firstPart] = chronologyMessages();
+  const scenarios = [
+    {
+      message: { ...firstPart, text: `${firstPart.text}\nПродолжение следует` },
+      now: RUN_AT,
+      reason: "incomplete-post",
+    },
+    {
+      message: firstPart,
+      now: new Date("2026-08-18T05:04:00.000Z"),
+      reason: "continuation-grace-period",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const { fetchHistory } = injectedFetch({ geranium_chronicles: [scenario.message] });
+    const result = await generateDailyReport({
+      reportDate: REPORT_DATE,
+      now: scenario.now,
+      fetchHistory,
+      reportsDirectory,
+    });
+    assert.deepEqual(result, {
+      status: "waiting-for-chronicle",
+      reportDate: REPORT_DATE,
+      reason: scenario.reason,
+    });
+  }
+
+  await assert.rejects(access(path.join(reportsDirectory, `${REPORT_DATE}.md`)));
   await assert.rejects(access(path.join(reportsDirectory, "latest.md")));
 });

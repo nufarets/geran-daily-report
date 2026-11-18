@@ -197,6 +197,24 @@ test("finds and joins a split daily chronicle", () => {
   assert.equal(result.sourceUrls.length, 2);
 });
 
+test("limits recovery of an extra date digit to the requested chronicle headline", () => {
+  const options = { startDate: "2026-11-17", endDate: "2026-11-18" };
+  const title = "Хроника ударов по территории Украины 17 ноября 2026 – 178ноября 2026 года";
+  const incorrectTitles = [
+    title.replace("17 ноября", "16 ноября"),
+    title.replace("178ноября", "178октября"),
+    title.replace("178ноября", "179ноября"),
+    `Ранее в канале\n${title}`,
+  ];
+  for (const text of incorrectTitles) {
+    assert.equal(findAndMergeChronicle([{ text }], options), null, text);
+  }
+
+  const exactTitle = title.replace("178ноября", "18 ноября");
+  const selected = findAndMergeChronicle([{ text: title }, { text: exactTitle }], options);
+  assert.equal(selected.text, exactTitle);
+});
+
 test("waits for a structurally incomplete split part but accepts a complete single post", () => {
   const title = "Хроника ударов по территории Украины 17 августа 2026 – 18 августа 2026 года.";
   const completeSinglePost = {

@@ -1,11 +1,11 @@
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fetchTelegramHistory } from "./telegram.mjs";
 import {
-  findAndMergeChronicle,
   findFirstStrikeUavMessage,
+  inspectChronicle,
   parseGeranChronology,
   parseLaunchPlaces,
   parseOfficialPpo,
@@ -20,6 +20,12 @@ const CHANNELS = Object.freeze({
   official: "kpszsu",
   launchFallbacks: ["ua_ppo_monitor", "Ukrainian_Intelligence", "StrategicaviationT"],
 });
+
+const CHRONICLE_WAIT_DETAILS = {
+  "no-matching-post": "В полученных сообщениях не найдено заглавной публикации с обеими датами периода.",
+  "incomplete-post": "Последняя найденная часть выглядит незавершённой. Генератор ожидает продолжение.",
+  "continuation-grace-period": "После публикации первой части ещё не прошло пяти минут ожидания продолжения.",
+};
 
 function zonedDateParts(date = new Date(), timeZone = REPORT_TIME_ZONE) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -181,7 +187,7 @@ export async function generateDailyReport({
     windowStart: searchFrom,
     windowEnd: cycleSearchTo,
   });
-  const chronicle = findAndMergeChronicle(chronicleMessages, {
+  const { chronicle, reason } = inspectChronicle(chronicleMessages, {
     startDate: previousDate,
     endDate: reportDate,
     now: runtimeNow,
@@ -189,8 +195,7 @@ export async function generateDailyReport({
   });
 
   if (!chronicle) {
-    console.log(`Хроника ${previousDate}–${reportDate} ещё не готова: отсутствует или неполна.`);
-    return { status: "waiting-for-chronicle", reportDate };
+    return { status: "waiting-for-chronicle", reportDate, reason };
   }
 
   const chronology = parseGeranChronology(chronicle.text, {
@@ -239,10 +244,21 @@ export async function generateDailyReport({
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   generateDailyReport()
-    .then((result) => {
+    .then(async (result) => {
       console.log(`Статус: ${result.status}`);
+      if (result.status === "waiting-for-chronicle") {
+        const detail = CHRONICLE_WAIT_DETAILS[result.reason];
+        console.log(`Сводка за ${result.reportDate} ожидает хронику. ${detail}`);
+        if (process.env.GITHUB_STEP_SUMMARY) {
+          await appendFile(
+            process.env.GITHUB_STEP_SUMMARY,
+            `### Сводка за ${result.reportDate} ожидает хронику\n\n${detail}\n`,
+          );
+        }
+      }
       if (process.env.REQUIRE_PUBLICATION === "1" && result.status.startsWith("waiting-")) {
-        throw new Error(`Отчёт не опубликован: ${result.status}`);
+        const status = result.reason ? `${result.status} (${result.reason})` : result.status;
+        throw new Error(`Отчёт не опубликован: ${status}`);
       }
     })
     .catch((error) => {
